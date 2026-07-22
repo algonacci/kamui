@@ -1,0 +1,2 @@
+# kamui
+sesuai namanya

@@ -1,4 +1,4 @@
-use crate::context::read_project_file;
+use crate::context::{list_project_directory, read_project_file};
 use crate::provider::{ToolCall, ToolDefinition};
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -20,7 +20,12 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     pub fn with_defaults(project_root: PathBuf) -> Self {
         Self {
-            tools: vec![Box::new(ReadFileTool { root: project_root })],
+            tools: vec![
+                Box::new(ReadFileTool {
+                    root: project_root.clone(),
+                }),
+                Box::new(ListDirectoryTool { root: project_root }),
+            ],
         }
     }
 
@@ -79,6 +84,47 @@ impl Tool for ReadFileTool {
             .and_then(|path| path.as_str())
             .context("read_file requires a 'path' string argument")?;
         read_project_file(&self.root, path)
+    }
+}
+
+/// Lists the entries of a directory within the project, so the model can discover files to read.
+struct ListDirectoryTool {
+    root: PathBuf,
+}
+
+impl Tool for ListDirectoryTool {
+    fn name(&self) -> &'static str {
+        "list_directory"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "List the entries of a directory in the project. The path must be relative \
+                          to the project root; use \".\" for the root. Directories are shown with a \
+                          trailing slash."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Project-relative directory path, e.g. src or \".\" for the root."
+                    }
+                },
+                "required": ["path"]
+            }),
+        }
+    }
+
+    fn run(&self, arguments: &str) -> Result<String> {
+        let value: serde_json::Value =
+            serde_json::from_str(arguments).context("tool arguments were not valid JSON")?;
+        let path = value
+            .get("path")
+            .and_then(|path| path.as_str())
+            .context("list_directory requires a 'path' string argument")?;
+        list_project_directory(&self.root, path)
     }
 }
 
@@ -145,5 +191,39 @@ mod tests {
         };
 
         assert!(registry.dispatch(&call).contains("unknown tool"));
+    }
+
+    #[test]
+    fn list_directory_shows_directories_before_files() {
+        let root = project_root();
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join("README.md"), "x").unwrap();
+        let registry = ToolRegistry::with_defaults(root.clone());
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "list_directory".to_string(),
+            arguments: r#"{"path":"."}"#.to_string(),
+        };
+
+        let output = registry.dispatch(&call);
+        assert!(output.contains("src/"));
+        assert!(output.contains("README.md"));
+        assert!(output.find("src/").unwrap() < output.find("README.md").unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn list_directory_rejects_a_file_path() {
+        let root = project_root();
+        fs::write(root.join("note.txt"), "x").unwrap();
+        let registry = ToolRegistry::with_defaults(root.clone());
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "list_directory".to_string(),
+            arguments: r#"{"path":"note.txt"}"#.to_string(),
+        };
+
+        assert!(registry.dispatch(&call).starts_with("Error:"));
+        fs::remove_dir_all(root).unwrap();
     }
 }

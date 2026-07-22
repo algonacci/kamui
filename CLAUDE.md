@@ -35,10 +35,10 @@ effort or operational risk is disproportionate to their immediate value.
   `/search <text>`, `/delete <id>`, `/stats`, and `/exit`. Plain `exit` also quits.
 - After each streamed response the usage line reports time-to-first-token and total response time.
   These latency figures are displayed only, not persisted.
-- Chat requests offer the model a read-only `read_file` tool. When the model calls it, Kamui runs a
-  bounded streaming agent loop: it executes the tool, prints a one-line trace, feeds the result
-  back, and continues until the model returns a plain answer. Only the user prompt and final answer
-  are persisted; intermediate tool messages are not.
+- Chat requests offer the model read-only `read_file` and `list_directory` tools. When the model
+  calls one, Kamui runs a bounded streaming agent loop: it executes the tool, prints a one-line
+  trace, feeds the result back, and continues until the model returns a plain answer. Only the user
+  prompt and final answer are persisted; intermediate tool messages are not.
 - Session IDs may be resolved from an unambiguous prefix. The UI normally displays the first eight
   characters.
 - Resume displays the six most recent messages and reports how many earlier messages were omitted.
@@ -73,7 +73,8 @@ Important modules:
   streaming tool agent loop, and graceful shutdown.
 - `src/context.rs`: project instruction discovery and safe `@file`, `@diff`, and `@staged`
   expansion, including the shared `read_project_file` path-safety helper.
-- `src/tools.rs`: the `Tool` trait, `ToolRegistry` dispatch, and the read-only `read_file` tool.
+- `src/tools.rs`: the `Tool` trait, `ToolRegistry` dispatch, and the read-only `read_file` and
+  `list_directory` tools.
 - `src/provider/mod.rs`: provider-independent request, response, message, usage, and streaming types.
 - `src/provider/openai.rs`: OpenAI-compatible Chat Completions HTTP and SSE implementation.
 - `src/storage.rs`: SQLite schema, migration, sessions, messages, usage, and persistence tests.
@@ -96,8 +97,9 @@ Native Anthropic and Gemini adapters must reuse these same neutral types.
 
 Tools live in `src/tools.rs`. `ToolRegistry` holds boxed `Tool` implementations, exposes their
 `ToolDefinition`s, and dispatches a `ToolCall` by name, returning any failure as an `Error: ...`
-string so the model can recover rather than aborting the turn. The only tool so far is read-only
-`read_file`, which reuses `context::read_project_file` for path safety. The chat loop runs a
+string so the model can recover rather than aborting the turn. The tools so far are read-only
+`read_file` and `list_directory`, which reuse `context::resolve_within_root` for path safety. The
+chat loop runs a
 streaming agent loop bounded by `MAX_TOOL_ROUNDS`: it streams a turn, and if the model requested
 tools it records the request, runs each tool, appends the results, and requests again until a plain
 answer arrives.

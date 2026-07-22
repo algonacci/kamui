@@ -117,27 +117,68 @@ fn file_references(input: &str) -> Vec<String> {
         .collect()
 }
 
-/// Resolve a project-relative reference to a file and read it, rejecting anything that escapes the
-/// project root. Shared by `@file` expansion and the read_file tool so path safety lives in one
-/// place.
-pub fn read_project_file(root: &Path, reference: &str) -> Result<String> {
+/// Resolve a project-relative reference to a real path inside the project root, rejecting absolute
+/// paths and anything that escapes the root once symlinks are resolved. Shared by `@file` expansion
+/// and the read-only tools so path safety lives in one place.
+fn resolve_within_root(root: &Path, reference: &str) -> Result<PathBuf> {
     let relative = Path::new(reference);
     if relative.is_absolute() {
         anyhow::bail!("path must be relative to the project: {reference}");
     }
 
-    let path = root
-        .join(relative)
-        .canonicalize()
-        .with_context(|| format!("could not read {reference} relative to {}", root.display()))?;
+    let path = root.join(relative).canonicalize().with_context(|| {
+        format!(
+            "could not access {reference} relative to {}",
+            root.display()
+        )
+    })?;
     if !path.starts_with(root) {
         anyhow::bail!("path is outside the project: {reference}");
     }
+
+    Ok(path)
+}
+
+/// Read a UTF-8 text file identified by a project-relative reference.
+pub fn read_project_file(root: &Path, reference: &str) -> Result<String> {
+    let path = resolve_within_root(root, reference)?;
     if !path.is_file() {
         anyhow::bail!("path is not a file: {reference}");
     }
 
     read_text_file(&path)
+}
+
+/// List the entries of a project-relative directory. Directories are shown with a trailing slash and
+/// sorted first; the `.git` directory is skipped to reduce noise. Use `.` for the project root.
+pub fn list_project_directory(root: &Path, reference: &str) -> Result<String> {
+    let path = resolve_within_root(root, reference)?;
+    if !path.is_dir() {
+        anyhow::bail!("path is not a directory: {reference}");
+    }
+
+    let mut entries: Vec<(bool, String)> = Vec::new();
+    for entry in fs::read_dir(&path).with_context(|| format!("could not list {reference}"))? {
+        let entry = entry.with_context(|| format!("could not read an entry in {reference}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == ".git" {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+        entries.push((is_dir, name));
+    }
+    if entries.is_empty() {
+        return Ok("(empty directory)".to_string());
+    }
+
+    // Directories first, then files, each alphabetically.
+    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let listing = entries
+        .into_iter()
+        .map(|(is_dir, name)| if is_dir { format!("{name}/") } else { name })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(listing)
 }
 
 fn read_text_file(path: &Path) -> Result<String> {
@@ -325,5 +366,31 @@ mod tests {
     fn file_references_strip_punctuation_and_deduplicate() {
         let refs = file_references("see @a.rs, and @b.rs; also @a.rs and a bare @");
         assert_eq!(refs, vec!["a.rs".to_string(), "b.rs".to_string()]);
+    }
+
+    #[test]
+    fn lists_directory_entries_within_the_project() {
+        let root = project();
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join("a.txt"), "x").unwrap();
+        let canonical = root.canonicalize().unwrap();
+
+        let listing = list_project_directory(&canonical, ".").unwrap();
+
+        assert!(listing.contains("src/"));
+        assert!(listing.contains("a.txt"));
+        assert!(listing.find("src/").unwrap() < listing.find("a.txt").unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn listing_rejects_a_file_path() {
+        let root = project();
+        fs::write(root.join("a.txt"), "x").unwrap();
+        let canonical = root.canonicalize().unwrap();
+
+        let error = list_project_directory(&canonical, "a.txt").unwrap_err();
+        assert!(error.to_string().contains("not a directory"));
+        fs::remove_dir_all(root).unwrap();
     }
 }

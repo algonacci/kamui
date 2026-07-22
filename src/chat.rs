@@ -1,3 +1,4 @@
+use crate::context::ProjectContext;
 use crate::provider::{ChatRequest, ChatResponse, Message, Provider, StreamEvent};
 use crate::storage::{Database, Session};
 use anyhow::{Context, Result};
@@ -12,10 +13,15 @@ pub async fn start_chat(
     default_model: String,
     context_window: Option<u64>,
     database: &Database,
+    project: &ProjectContext,
     resume_id: Option<String>,
 ) -> Result<()> {
     print_banner();
     println!("Data: {}", database.path().display());
+    println!("Project: {}", project.root().display());
+    if let Some(name) = project.instruction_name() {
+        println!("Instructions: {name}");
+    }
     println!("Type /help for commands or exit to quit.\n");
 
     let (mut session, mut messages) = match resume_id {
@@ -84,7 +90,17 @@ pub async fn start_chat(
 
         let user_message = Message::user(input);
         let mut request_messages = messages.clone();
-        request_messages.push(user_message.clone());
+        if let Some(instructions) = project.system_message() {
+            request_messages.insert(0, Message::system(instructions));
+        }
+        let expanded_input = match project.expand_file_references(input) {
+            Ok(input) => input,
+            Err(error) => {
+                eprintln!("\nCould not attach file: {error:#}\n");
+                continue;
+            }
+        };
+        request_messages.push(Message::user(expanded_input));
 
         let request = provider.chat_stream(ChatRequest {
             model: session

@@ -1,8 +1,10 @@
 mod chat;
+mod context;
 mod provider;
 mod storage;
 
 use anyhow::{Context, Result};
+use context::ProjectContext;
 use directories::BaseDirs;
 use provider::openai::OpenAIProvider;
 use storage::Database;
@@ -34,8 +36,17 @@ async fn main() -> Result<()> {
         })
         .transpose()?;
     let database = Database::open()?;
+    let project = ProjectContext::discover()?;
 
-    chat::start_chat(&provider, model, context_window, &database, resume_id).await?;
+    chat::start_chat(
+        &provider,
+        model,
+        context_window,
+        &database,
+        &project,
+        resume_id,
+    )
+    .await?;
 
     Ok(())
 }

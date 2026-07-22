@@ -1,6 +1,6 @@
 # kamui
 
-Provider-agnostic LLM chat CLI written in Rust.
+Provider-agnostic, repository-aware LLM chat CLI written in Rust.
 
 The first provider implementation uses the OpenAI Chat Completions API. The core request and
 response types are independent from that API so other providers can be added without changing
@@ -82,6 +82,22 @@ Resume a saved session directly when starting Kamui:
 ```sh
 kamui -r <session-id>
 ```
+
+## Repository context
+
+Kamui uses the directory where it was launched as the project root. If that directory contains
+`KAMUI.md` or `AGENTS.md`, Kamui sends the first file found in that order as project instructions
+with every chat request.
+
+Reference a UTF-8 text file relative to the project root with `@path`:
+
+```text
+> Explain the error handling in @src/main.rs
+```
+
+Referenced files are attached only to that request and are not copied into session history. Each
+file is limited to 64 KiB and all attached files together are limited to 128 KiB. Absolute paths,
+directories, binary files, and paths or symlinks outside the project are rejected.
 
 ## Data storage
 

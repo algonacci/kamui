@@ -50,6 +50,10 @@ effort or operational risk is disproportionate to their immediate value.
   are prefixed with `rtk` to compress their output. Commands with shell operators, commands already
   prefixed with `rtk`, and all commands on systems without RTK run directly. The first result line
   records the exact command line executed.
+- `patch_file` edits one file per call by exact-match replacement and shows a +/- preview before
+  the same `y`/`yes` approval. `old_text` must match exactly once or the patch is rejected with
+  recovery guidance; empty `old_text` creates a new file that must not exist. Writes are atomic
+  (temp file plus rename) and paths pass the same containment checks as reads.
 - Session IDs may be resolved from an unambiguous prefix. The UI normally displays the first eight
   characters.
 - Resume displays the six most recent messages and reports how many earlier messages were omitted.
@@ -85,7 +89,7 @@ Important modules:
 - `src/context.rs`: project instruction discovery and safe `@file`, `@diff`, and `@staged`
   expansion, including the shared `read_project_file` path-safety helper.
 - `src/tools.rs`: the async `Tool` trait, `ToolRegistry` dispatch, the read-only `read_file` and
-  `list_directory` tools, and the confirmation-gated `run_command` tool.
+  `list_directory` tools, and the confirmation-gated `run_command` and `patch_file` tools.
 - `src/provider/mod.rs`: provider-independent request, response, message, usage, and streaming types.
 - `src/provider/openai.rs`: OpenAI-compatible Chat Completions HTTP and SSE implementation.
 - `src/storage.rs`: SQLite schema, migration, sessions, messages, usage, and persistence tests.

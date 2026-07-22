@@ -35,7 +35,7 @@ re-add without a concrete user request.
 - [x] Safe terminal command runner with permission, timeout, and output limits
 - [x] Preserve raw output on failures and command exit codes
 - [x] Optional RTK execution backend with direct-command fallback
-- [ ] Patch file tool with confirmation
+- [x] Patch file tool with confirmation
 - [ ] Multi-file editing
 - [ ] Git status, diff, and commit integration
 - [ ] Tool audit trail
@@ -60,6 +60,14 @@ RTK routing is in place: the `rtk` binary is detected once per process, and simp
 prefixed with `rtk` so compressed output reaches model context. Commands containing shell operators,
 commands already prefixed with `rtk`, and every command on systems without RTK run directly. The
 first line of each result records the exact command line that was executed.
+
+The `patch_file` tool edits one file per call by exact-match replacement: `old_text` must match the
+file exactly once, or the patch is rejected with guidance so the model re-reads and retries; an
+empty `old_text` creates a new file that must not already exist. Every patch shows a +/- line
+preview and requires the same `y`/`yes` approval as commands. Writes go through a temporary file
+and rename so an interrupted write cannot leave a half-written file, and paths resolve through the
+same containment checks as reading (a new file's parent directory must already exist inside the
+project). Multi-file editing beyond one file per call remains future work.
 
 Tool messages are now persisted. A `user_version = 3` migration rebuilds the `messages` table to
 allow the `'tool'` role and store `tool_calls` and `tool_call_id`, and a whole turn (prompt, tool

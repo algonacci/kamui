@@ -139,6 +139,33 @@ fn resolve_within_root(root: &Path, reference: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Resolve a project-relative path for writing. Unlike `resolve_within_root`, the file itself may
+/// not exist yet, but its parent directory must already exist inside the project root.
+pub fn resolve_for_write(root: &Path, reference: &str) -> Result<PathBuf> {
+    let relative = Path::new(reference);
+    if relative.is_absolute() {
+        anyhow::bail!("path must be relative to the project: {reference}");
+    }
+
+    let joined = root.join(relative);
+    let parent = joined
+        .parent()
+        .with_context(|| format!("path has no parent directory: {reference}"))?;
+    let parent = parent.canonicalize().with_context(|| {
+        format!(
+            "the parent directory of {reference} does not exist in {}",
+            root.display()
+        )
+    })?;
+    if !parent.starts_with(root) {
+        anyhow::bail!("path is outside the project: {reference}");
+    }
+    let name = joined
+        .file_name()
+        .with_context(|| format!("path has no file name: {reference}"))?;
+    Ok(parent.join(name))
+}
+
 /// Read a UTF-8 text file identified by a project-relative reference.
 pub fn read_project_file(root: &Path, reference: &str) -> Result<String> {
     let path = resolve_within_root(root, reference)?;

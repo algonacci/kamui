@@ -240,6 +240,9 @@ pub async fn start_chat(
                     truncate(call.arguments.trim(), 120)
                 );
                 let output = if tools.requires_confirmation(&call.name) {
+                    if let Some(preview) = tools.preview(call) {
+                        println!("{preview}");
+                    }
                     print!("    approve? [y/N] ");
                     io::stdout().flush()?;
                     let answer = tokio::select! {

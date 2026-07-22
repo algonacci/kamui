@@ -133,13 +133,15 @@ in `@diff`; attach them explicitly with `@path`.
 
 ## Tools
 
-Kamui offers the model three tools: `list_directory` (discover what is in a folder), `read_file`
-(read a file), and `run_command` (run a shell command). When you ask about code, the model can
-explore, read, build, and test on its own instead of requiring you to attach files with `@path`:
+Kamui offers the model four tools: `list_directory` (discover what is in a folder), `read_file`
+(read a file), `run_command` (run a shell command), and `patch_file` (edit or create a file). When
+you ask about code, the model can explore, read, build, test, and fix on its own instead of
+requiring you to attach files with `@path`:
 
 ```text
 > What does the agent loop in src/chat.rs do?
 > Run the tests and tell me if anything fails.
+> Fix the typo in the README heading.
 ```
 
 If the model calls a tool, Kamui prints a short trace of each call, runs it, feeds the result back,
@@ -150,7 +152,13 @@ run away.
 `run_command` never runs on its own. Kamui shows you the exact command and waits for you to approve
 it (`y`/`yes`); anything else declines and tells the model so. Commands run in the project directory
 with input disabled, a 30-second timeout, and a capped amount of captured output, and the model sees
-the exit code alongside stdout and stderr. File editing is not implemented yet.
+the exit code alongside stdout and stderr.
+
+`patch_file` edits one file per call and is also gated behind your approval: Kamui shows the change
+as removed (`-`) and added (`+`) lines before asking. A patch replaces text that must match the file
+exactly once — if it does not, the patch is rejected and the model is told to re-read the file, so a
+stale edit can never overwrite unexpected content. An empty `old_text` creates a new file. Writes are
+atomic, and paths cannot escape the project root.
 
 If the [RTK](https://github.com/rtk-ai/rtk) binary is installed, simple approved commands are
 automatically prefixed with `rtk` so their output is compressed before it reaches the model. RTK is

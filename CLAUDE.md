@@ -65,8 +65,10 @@ effort or operational risk is disproportionate to their immediate value.
   records the exact command line executed.
 - `patch_file` edits one file per call by exact-match replacement and shows a +/- preview before
   the same `y`/`yes` approval. `old_text` must match exactly once or the patch is rejected with
-  recovery guidance; empty `old_text` creates a new file that must not exist. Writes are atomic
-  (temp file plus rename) and paths pass the same containment checks as reads.
+  recovery guidance; empty `old_text` creates a new file that must not exist. Matching is
+  line-ending-agnostic (CRLF files are compared in LF space and rewritten with their original
+  endings), so LF `old_text` still matches a CRLF file. Writes are atomic (temp file plus rename)
+  and paths pass the same containment checks as reads.
 - Session IDs may be resolved from an unambiguous prefix. The UI normally displays the first eight
   characters.
 - Resume displays the six most recent messages and reports how many earlier messages were omitted.

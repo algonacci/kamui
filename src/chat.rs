@@ -15,7 +15,8 @@ use tokio::task::JoinHandle;
 
 const RESUME_PREVIEW_MESSAGES: usize = 6;
 /// Upper bound on model/tool round-trips within a single user turn, to stop runaway tool loops.
-const MAX_TOOL_ROUNDS: usize = 8;
+/// Generous enough for multi-file edits while still bounding a stuck loop.
+const MAX_TOOL_ROUNDS: usize = 25;
 /// Settings key for the persisted active provider profile.
 const ACTIVE_PROFILE_KEY: &str = "active_profile";
 

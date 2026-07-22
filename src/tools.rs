@@ -394,7 +394,15 @@ impl Tool for PatchFileTool {
         }
 
         let current = read_project_file(&self.root, &patch.path)?;
-        match current.matches(&patch.old_text).count() {
+        // Match line-ending-agnostically: files (especially on Windows) often use CRLF, but models
+        // emit LF, so a raw byte match would fail spuriously. Compare in LF space and restore the
+        // file's line-ending style on write.
+        let uses_crlf = current.contains("\r\n");
+        let normalized = current.replace("\r\n", "\n");
+        let old_text = patch.old_text.replace("\r\n", "\n");
+        let new_text = patch.new_text.replace("\r\n", "\n");
+
+        match normalized.matches(&old_text).count() {
             0 => anyhow::bail!(
                 "old_text was not found in {}; read the file again and copy the text exactly",
                 patch.path
@@ -405,7 +413,12 @@ impl Tool for PatchFileTool {
                 patch.path
             ),
         }
-        let updated = current.replacen(&patch.old_text, &patch.new_text, 1);
+        let updated = normalized.replacen(&old_text, &new_text, 1);
+        let updated = if uses_crlf {
+            updated.replace('\n', "\r\n")
+        } else {
+            updated
+        };
         write_atomic(&target, &updated)?;
         Ok(format!("patched {}", patch.path))
     }
@@ -609,6 +622,32 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join("main.rs")).unwrap(),
             "fn main() { new(); }\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn patch_file_matches_across_line_endings() {
+        let root = project_root();
+        // A CRLF file, but the model's old_text uses LF.
+        fs::write(
+            root.join("crlf.txt"),
+            "line one\r\nline two\r\nline three\r\n",
+        )
+        .unwrap();
+        let registry = ToolRegistry::with_defaults(root.clone());
+
+        let output = registry
+            .dispatch(&patch_call(
+                r#"{"path":"crlf.txt","old_text":"line one\nline two","new_text":"line one\nLINE TWO"}"#,
+            ))
+            .await;
+
+        assert_eq!(output, "patched crlf.txt");
+        // The edit applies and the CRLF line endings are preserved.
+        assert_eq!(
+            fs::read_to_string(root.join("crlf.txt")).unwrap(),
+            "line one\r\nLINE TWO\r\nline three\r\n"
         );
         fs::remove_dir_all(root).unwrap();
     }

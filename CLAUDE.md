@@ -157,10 +157,12 @@ removed. Precedence is:
 3. Built-in defaults.
 
 Two forms are accepted. The flat form sets top-level `model`/`context_window` and a `[provider]`
-section. The multi-profile form defines named `[profiles.<name>]` entries (each with `model`,
-`base_url`, `api_key`, and optional `context_window`) plus a `default_profile`; profiles win when
+section. The multi-profile form defines named `[profiles.<name>]` entries (each with `model` and
+optional `base_url`/`api_key`/`context_window`/`tools`) plus a `default_profile`; profiles win when
 present, and `/model` switches between them at runtime with the active choice stored in the SQLite
-`settings` table. A single implicit profile named `default` backs the flat form.
+`settings` table. A single implicit profile named `default` backs the flat form. A profile may set
+`provider = "<name>"` to inherit `base_url`/`api_key`/`tools` from a shared `[providers.<name>]`
+block, so one key can back many model profiles; inline profile fields override the shared block.
 
 Fields:
 

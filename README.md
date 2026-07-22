@@ -69,25 +69,39 @@ particular provider (never the key).
 
 ### Switching models and providers at runtime
 
-Instead of editing the file every time, define named profiles once and switch with `/model`:
+Instead of editing the file every time, define named profiles once and switch with `/model`. Share
+one API key across many models by defining a `[providers.<name>]` block and pointing profiles at it
+with `provider = "<name>"`:
 
 ```toml
-default_profile = "jatevo"
+default_profile = "sol"
 
-[profiles.jatevo]
-model = "gpt-5.6-sol"
+[providers.jatevo]
 base_url = "https://api.jatevo.ai/v1"
-api_key = "sk-jvo-..."
+api_key = "sk-jvo-..."          # defined once, used by every Jatevo profile
 
-[profiles.ollama]
-model = "llama3.2"
+[providers.ollama]
 base_url = "http://localhost:11434/v1"
 api_key = "ollama"
+
+[profiles.sol]
+provider = "jatevo"
+model = "gpt-5.6-sol"
+
+[profiles.terra]
+provider = "jatevo"
+model = "gpt-5.6-terra"
+
+[profiles.codeqwen]
+provider = "ollama"
+model = "codeqwen:latest"
+tools = false                   # this model does not support tools
 ```
 
-In chat, `/model` lists the profiles and marks the active one, and `/model ollama` switches the
+In chat, `/model` lists the profiles and marks the active one, and `/model codeqwen` switches the
 active provider and model for the next messages. Your choice is remembered across restarts, and the
-banner always shows which model is active — handy for comparing the same prompt across providers.
+banner always shows which model is active — handy for comparing the same prompt across models. A
+profile can still set `base_url`/`api_key` inline instead of referencing a provider.
 
 ## Install
 

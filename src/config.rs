@@ -32,21 +32,29 @@ api_key = \"\"
 # models). Kamui then chats without offering tools. Defaults to true.
 # tools = true
 
-# Alternatively, define several named profiles and switch between them at runtime
-# with `/model <name>`. When profiles are present the flat settings above are ignored.
+# Alternatively, define named profiles and switch between them at runtime with
+# `/model <name>`. When profiles are present the flat settings above are ignored.
+# Share one API key across many models by defining a [providers.*] block and
+# referencing it from each profile with `provider = \"<name>\"`.
 #
-# default_profile = \"openai\"
+# default_profile = \"gpt4o\"
 #
-# [profiles.openai]
-# model = \"gpt-4o\"
+# [providers.openai]
 # base_url = \"https://api.openai.com/v1\"
 # api_key = \"sk-...\"
 #
-# [profiles.ollama]
-# model = \"llama3.2\"
+# [providers.ollama]
 # base_url = \"http://localhost:11434/v1\"
 # api_key = \"ollama\"
-# tools = false          # codeqwen and many small models do not support tools
+#
+# [profiles.gpt4o]
+# provider = \"openai\"
+# model = \"gpt-4o\"
+#
+# [profiles.codeqwen]
+# provider = \"ollama\"
+# model = \"codeqwen:latest\"
+# tools = false          # many small local models do not support tools
 ";
 
 /// One provider+model configuration the user can run under.
@@ -96,6 +104,9 @@ struct ConfigFile {
     context_window: Option<u64>,
     provider: Option<ProviderSection>,
     default_profile: Option<String>,
+    /// Named, shared provider credentials that profiles can reference by name.
+    #[serde(default)]
+    providers: HashMap<String, ProviderSection>,
     #[serde(default)]
     profiles: HashMap<String, ProfileSection>,
 }
@@ -109,6 +120,8 @@ struct ProviderSection {
 
 #[derive(Debug, Default, Deserialize)]
 struct ProfileSection {
+    /// Name of a `[providers.*]` block to inherit base_url/api_key/tools from.
+    provider: Option<String>,
     model: Option<String>,
     base_url: Option<String>,
     api_key: Option<String>,
@@ -144,19 +157,16 @@ impl Config {
     }
 }
 
-/// Whether a global file carries at least one usable API key (flat or in any profile).
+/// Whether a global file carries at least one usable API key, in the flat provider, a shared
+/// `[providers.*]` block, or inline on a profile.
 fn has_any_key(file: &ConfigFile) -> bool {
     let non_empty =
         |key: &Option<String>| key.as_ref().is_some_and(|value| !value.trim().is_empty());
-    if !file.profiles.is_empty() {
-        file.profiles
-            .values()
-            .any(|profile| non_empty(&profile.api_key))
-    } else {
-        file.provider
-            .as_ref()
-            .is_some_and(|provider| non_empty(&provider.api_key))
-    }
+    file.provider
+        .as_ref()
+        .is_some_and(|provider| non_empty(&provider.api_key))
+        || file.providers.values().any(|p| non_empty(&p.api_key))
+        || file.profiles.values().any(|p| non_empty(&p.api_key))
 }
 
 /// Merge a global file with an optional project file into a resolved `Config`. Kept separate from
@@ -177,15 +187,13 @@ fn resolve(global: ConfigFile, project: Option<ConfigFile>) -> Result<Config> {
     }
 }
 
-/// A project file may not set an api_key anywhere, flat or per-profile.
+/// A project file may not set an api_key anywhere: flat, in a shared provider, or per-profile.
 fn declares_key(file: &ConfigFile) -> bool {
     file.provider
         .as_ref()
         .is_some_and(|provider| provider.api_key.is_some())
-        || file
-            .profiles
-            .values()
-            .any(|profile| profile.api_key.is_some())
+        || file.providers.values().any(|p| p.api_key.is_some())
+        || file.profiles.values().any(|p| p.api_key.is_some())
 }
 
 /// The single-profile form: top-level `model`/`provider`, with project overrides for non-secrets.
@@ -233,27 +241,46 @@ fn resolve_flat(global: ConfigFile, project: Option<ConfigFile>) -> Result<Confi
     })
 }
 
-/// The multi-profile form: one `[profiles.<name>]` per provider, chosen with `default_profile`.
+/// The multi-profile form: one `[profiles.<name>]` per model, chosen with `default_profile`. A
+/// profile may inherit base_url/api_key/tools from a shared `[providers.<name>]` block it references.
 fn resolve_profiles(global: ConfigFile, project: Option<ConfigFile>) -> Result<Config> {
     let mut profiles = Vec::with_capacity(global.profiles.len());
-    for (name, section) in global.profiles {
+    for (name, section) in &global.profiles {
+        let shared = match &section.provider {
+            Some(reference) => Some(global.providers.get(reference).with_context(|| {
+                format!("profile '{name}' references unknown provider '{reference}'")
+            })?),
+            None => None,
+        };
+
         let model = section
             .model
+            .clone()
             .with_context(|| format!("profile '{name}' is missing a model"))?;
         let base_url = section
             .base_url
+            .clone()
+            .or_else(|| shared.and_then(|provider| provider.base_url.clone()))
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         let api_key = section
             .api_key
+            .clone()
+            .or_else(|| shared.and_then(|provider| provider.api_key.clone()))
             .filter(|key| !key.trim().is_empty())
-            .with_context(|| format!("profile '{name}' is missing an api_key"))?;
+            .with_context(|| {
+                format!("profile '{name}' has no api_key (set it on the profile or its provider)")
+            })?;
+        let tools = section
+            .tools
+            .or_else(|| shared.and_then(|provider| provider.tools))
+            .unwrap_or(true);
         profiles.push(Profile {
-            name,
+            name: name.clone(),
             model,
             base_url,
             api_key,
             context_window: section.context_window,
-            tools: section.tools.unwrap_or(true),
+            tools,
         });
     }
     // Stable ordering for listing, since the source is a hash map.
@@ -357,6 +384,37 @@ mod tests {
         // Profiles are sorted by name for stable listing.
         assert_eq!(config.profiles[0].name, "ollama");
         assert_eq!(config.profiles[1].name, "openai");
+    }
+
+    #[test]
+    fn profiles_inherit_shared_provider_credentials() {
+        let global = file(
+            "default_profile = \"sol\"\n\
+             [providers.jatevo]\nbase_url = \"https://api.jatevo.ai/v1\"\napi_key = \"sk-j\"\n\
+             [providers.ollama]\nbase_url = \"http://localhost:11434/v1\"\napi_key = \"ollama\"\ntools = false\n\
+             [profiles.sol]\nprovider = \"jatevo\"\nmodel = \"gpt-5.6-sol\"\n\
+             [profiles.codeqwen]\nprovider = \"ollama\"\nmodel = \"codeqwen:latest\"",
+        );
+        let config = resolve(global, None).unwrap();
+
+        let sol = config.find("sol").unwrap();
+        assert_eq!(sol.base_url, "https://api.jatevo.ai/v1");
+        assert_eq!(sol.api_key, "sk-j");
+        assert!(sol.tools);
+
+        let codeqwen = config.find("codeqwen").unwrap();
+        assert_eq!(codeqwen.api_key, "ollama");
+        assert!(!codeqwen.tools); // inherited from the ollama provider
+    }
+
+    #[test]
+    fn a_profile_referencing_an_unknown_provider_errors() {
+        let error = resolve(
+            file("[profiles.x]\nprovider = \"ghost\"\nmodel = \"m\""),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown provider 'ghost'"));
     }
 
     #[test]

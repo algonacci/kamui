@@ -50,11 +50,12 @@ and the chat loop runs a streaming agent loop (bounded by a per-turn round limit
 requested tools and feeds results back until the model returns a plain answer. Tool failures are
 returned to the model as text so it can recover.
 
-Not yet done: tool messages are not persisted. Only the user prompt and the final assistant answer
-are saved, so resumed sessions do not replay intermediate tool calls, and the `messages.role` CHECK
-constraint still excludes `'tool'`. Recorded usage is the final round's, not the whole turn's. Full
-tool-message persistence and per-turn usage accounting remain future work, alongside the terminal
-runner, mutation tools, and a durable audit trail.
+Tool messages are now persisted. A `user_version = 3` migration rebuilds the `messages` table to
+allow the `'tool'` role and store `tool_calls` and `tool_call_id`, and a whole turn (prompt, tool
+requests, tool results, final answer) is saved atomically, so resumed sessions replay the tool
+interactions. Still approximate: recorded usage is the final round's, not the sum across a turn's
+rounds. Per-turn usage accounting, the terminal runner, mutation tools, and a durable audit trail
+remain future work.
 
 RTK is an execution optimization, not the command permission layer. When installed, Kamui should
 route supported terminal commands through the external `rtk` binary to reduce tool output before it

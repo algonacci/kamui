@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -102,8 +102,8 @@ pub struct ToolDefinition {
     pub parameters: Value,
 }
 
-/// A tool invocation requested by the model.
-#[derive(Clone, Debug)]
+/// A tool invocation requested by the model. Serializable so it can be persisted with its message.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,

@@ -146,8 +146,8 @@ and continues streaming until a final answer. Tool calls reuse the same path saf
 (project-relative only, no escaping the root, 64 KiB per file) and the loop is bounded so it cannot
 run away. The tools are read-only; file editing and command execution are not implemented yet.
 
-Only your prompt and the model's final answer are saved to session history. Intermediate tool calls
-and their results are not persisted, so a resumed session will not replay them.
+The whole turn is saved to session history, including the tool calls and their results, so a resumed
+session replays the tool interactions the model relied on.
 
 ## RTK integration direction
 

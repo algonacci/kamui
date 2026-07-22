@@ -118,9 +118,12 @@ pub async fn start_chat(
         turn_messages.push(Message::user(expanded_input));
 
         // Agent loop: stream a turn, run any tools it requests, and repeat until a plain answer.
+        // `tool_trail` collects this turn's intermediate tool-request and tool-result messages so
+        // they can be persisted alongside the prompt and final answer.
         let mut final_usage = Usage::default();
         let mut final_finish = String::new();
         let mut last_content = String::new();
+        let mut tool_trail: Vec<Message> = Vec::new();
         let mut round = 0usize;
         let assistant_message = 'agent: loop {
             round += 1;
@@ -215,7 +218,9 @@ pub async fn start_chat(
             }
 
             // The model requested tools. Record the request, run each tool, feed the results back.
-            turn_messages.push(Message::tool_request(content, tool_calls.clone()));
+            let request_message = Message::tool_request(content, tool_calls.clone());
+            turn_messages.push(request_message.clone());
+            tool_trail.push(request_message);
             for call in &tool_calls {
                 println!(
                     "  \u{2192} {}({})",
@@ -227,27 +232,34 @@ pub async fn start_chat(
                     Some(error) => println!("    ! {error}"),
                     None => println!("    ok ({} chars)", output.chars().count()),
                 }
-                turn_messages.push(Message::tool_result(&call.id, output));
+                let result_message = Message::tool_result(&call.id, output);
+                turn_messages.push(result_message.clone());
+                tool_trail.push(result_message);
             }
         };
+
+        // Assemble the full turn: the original prompt, any tool trail, then the final answer.
+        let final_answer = assistant_message.content.clone();
+        let mut turn_record = Vec::with_capacity(tool_trail.len() + 2);
+        turn_record.push(user_message);
+        turn_record.append(&mut tool_trail);
+        turn_record.push(assistant_message);
 
         let is_first_exchange = session.is_none();
         let active_session = match session.as_mut() {
             Some(session) => session,
             None => session.insert(database.create_session(provider.name(), &default_model)?),
         };
-        database.save_exchange(
+        database.save_turn(
             &active_session.id,
-            &user_message,
-            &assistant_message,
+            &turn_record,
             &final_usage,
             &final_finish,
         )?;
         if active_session.title == "New chat" {
             active_session.title = make_title(input);
         }
-        messages.push(user_message);
-        messages.push(assistant_message);
+        messages.extend(turn_record);
 
         if is_first_exchange {
             let title_request = provider.chat(ChatRequest {
@@ -256,8 +268,8 @@ pub async fn start_chat(
                     Message::system(
                         "Create a concise title of at most 6 words for this conversation. Return only the title without quotes or punctuation.",
                     ),
-                    messages[0].clone(),
-                    messages[1].clone(),
+                    Message::user(input),
+                    Message::assistant(final_answer),
                 ],
                 tools: Vec::new(),
             });
@@ -483,9 +495,20 @@ fn print_history_preview(messages: &[Message]) {
             "user" => "You",
             "assistant" => "Assistant",
             "system" => "System",
-            _ => unreachable!(),
+            "tool" => "Tool",
+            _ => "?",
         };
-        println!("{speaker}:\n{}\n", message.content);
+        let body = if message.content.is_empty() && !message.tool_calls.is_empty() {
+            let names: Vec<&str> = message
+                .tool_calls
+                .iter()
+                .map(|call| call.name.as_str())
+                .collect();
+            format!("(requested tools: {})", names.join(", "))
+        } else {
+            message.content.clone()
+        };
+        println!("{speaker}:\n{body}\n");
     }
     println!("--- End of history ---\n");
 }

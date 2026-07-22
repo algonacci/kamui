@@ -99,6 +99,27 @@ impl Database {
                  PRAGMA user_version = 2;",
             )?;
         }
+        if version < 3 {
+            // Rebuild messages to allow the 'tool' role and store tool-call metadata. SQLite cannot
+            // alter a CHECK constraint in place, so the table is recreated and its rows copied.
+            connection.execute_batch(
+                "ALTER TABLE messages RENAME TO messages_pre_tools;
+                 CREATE TABLE messages (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                     role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
+                     content TEXT NOT NULL,
+                     tool_calls TEXT,
+                     tool_call_id TEXT,
+                     created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                 );
+                 INSERT INTO messages (id, session_id, role, content, created_at)
+                     SELECT id, session_id, role, content, created_at FROM messages_pre_tools;
+                 DROP TABLE messages_pre_tools;
+                 CREATE INDEX IF NOT EXISTS messages_session_id ON messages(session_id, id);
+                 PRAGMA user_version = 3;",
+            )?;
+        }
         Ok(Self { connection, path })
     }
 
@@ -161,24 +182,38 @@ impl Database {
     }
 
     pub fn load_messages(&self, session_id: &str) -> Result<Vec<Message>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT role, content FROM messages WHERE session_id = ?1 ORDER BY id")?;
+        let mut statement = self.connection.prepare(
+            "SELECT role, content, tool_calls, tool_call_id
+             FROM messages WHERE session_id = ?1 ORDER BY id",
+        )?;
         let rows = statement.query_map([session_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
         })?;
         rows.map(|row| {
-            let (role, content) = row?;
-            Message::from_parts(&role, content)
+            let (role, content, tool_calls, tool_call_id) = row?;
+            let mut message = Message::from_parts(&role, content)?;
+            if let Some(json) = tool_calls {
+                message.tool_calls =
+                    serde_json::from_str(&json).context("failed to parse stored tool calls")?;
+            }
+            message.tool_call_id = tool_call_id;
+            Ok(message)
         })
         .collect()
     }
 
-    pub fn save_exchange(
+    /// Persist a full turn: every message it produced plus one usage record, atomically. A turn is
+    /// usually a user prompt and an assistant answer, but may also include the assistant's tool
+    /// requests and the tool results in between.
+    pub fn save_turn(
         &self,
         session_id: &str,
-        user: &Message,
-        assistant: &Message,
+        messages: &[Message],
         usage: &Usage,
         finish_reason: &str,
     ) -> Result<()> {
@@ -189,14 +224,27 @@ impl Database {
         let total_tokens =
             i64::try_from(usage.total_tokens).context("total token count overflow")?;
         let transaction = self.connection.unchecked_transaction()?;
-        transaction.execute(
-            "INSERT INTO messages (session_id, role, content) VALUES (?1, ?2, ?3)",
-            params![session_id, user.role_name(), user.content],
-        )?;
-        transaction.execute(
-            "INSERT INTO messages (session_id, role, content) VALUES (?1, ?2, ?3)",
-            params![session_id, assistant.role_name(), assistant.content],
-        )?;
+        for message in messages {
+            let tool_calls = if message.tool_calls.is_empty() {
+                None
+            } else {
+                Some(
+                    serde_json::to_string(&message.tool_calls)
+                        .context("failed to serialize tool calls")?,
+                )
+            };
+            transaction.execute(
+                "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    session_id,
+                    message.role_name(),
+                    message.content,
+                    tool_calls,
+                    message.tool_call_id
+                ],
+            )?;
+        }
         transaction.execute(
             "INSERT INTO usage_records
              (session_id, input_tokens, output_tokens, total_tokens, finish_reason, kind)
@@ -209,12 +257,17 @@ impl Database {
                 finish_reason
             ],
         )?;
+        let title_source = messages
+            .iter()
+            .find(|message| message.role_name() == "user")
+            .map(|message| message.content.as_str())
+            .unwrap_or_default();
         transaction.execute(
             "UPDATE sessions SET
                  title = CASE WHEN title = 'New chat' THEN ?2 ELSE title END,
                  updated_at = unixepoch()
              WHERE id = ?1",
-            params![session_id, make_title(&user.content)],
+            params![session_id, make_title(title_source)],
         )?;
         transaction.commit()?;
         Ok(())
@@ -358,6 +411,7 @@ fn make_title(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::ToolCall;
 
     fn database() -> Database {
         Database::initialize(
@@ -368,14 +422,108 @@ mod tests {
     }
 
     #[test]
+    fn persists_and_reloads_a_tool_turn() {
+        let database = database();
+        let session = database.create_session("test", "model").unwrap();
+        database
+            .save_turn(
+                &session.id,
+                &[
+                    Message::user("read it"),
+                    Message::tool_request(
+                        "",
+                        vec![ToolCall {
+                            id: "c1".to_string(),
+                            name: "read_file".to_string(),
+                            arguments: r#"{"path":"a.rs"}"#.to_string(),
+                        }],
+                    ),
+                    Message::tool_result("c1", "fn main() {}"),
+                    Message::assistant("It defines main."),
+                ],
+                &Usage::default(),
+                "stop",
+            )
+            .unwrap();
+
+        let messages = database.load_messages(&session.id).unwrap();
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[1].role_name(), "assistant");
+        assert_eq!(messages[1].tool_calls.len(), 1);
+        assert_eq!(messages[1].tool_calls[0].name, "read_file");
+        assert_eq!(messages[2].role_name(), "tool");
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(messages[2].content, "fn main() {}");
+        // The turn counts as a single request despite its extra messages.
+        assert_eq!(
+            database.session_stats(&session.id).unwrap().request_count,
+            1
+        );
+    }
+
+    #[test]
+    fn migration_preserves_messages_and_enables_the_tool_role() {
+        let connection = Connection::open_in_memory().unwrap();
+        // Reconstruct the pre-tool (user_version 2) schema with one existing message.
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE sessions (
+                     id TEXT PRIMARY KEY, title TEXT NOT NULL, provider TEXT NOT NULL,
+                     model TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                     updated_at INTEGER NOT NULL DEFAULT (unixepoch()));
+                 CREATE TABLE messages (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                     role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant')),
+                     content TEXT NOT NULL,
+                     created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+                 CREATE INDEX messages_session_id ON messages(session_id, id);
+                 CREATE TABLE usage_records (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                     input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                     total_tokens INTEGER NOT NULL, finish_reason TEXT NOT NULL,
+                     kind TEXT NOT NULL DEFAULT 'chat',
+                     created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+                 INSERT INTO sessions (id, title, provider, model) VALUES ('s1', 't', 'test', 'm');
+                 INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', 'hi');
+                 PRAGMA user_version = 2;",
+            )
+            .unwrap();
+
+        let database = Database::initialize(connection, PathBuf::from(":memory:")).unwrap();
+
+        // The existing message survives the rebuild.
+        let messages = database.load_messages("s1").unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "hi");
+
+        // The relaxed CHECK now accepts a tool turn.
+        database
+            .save_turn(
+                "s1",
+                &[Message::tool_result("c1", "body")],
+                &Usage::default(),
+                "stop",
+            )
+            .unwrap();
+        let messages = database.load_messages("s1").unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].role_name(), "tool");
+    }
+
+    #[test]
     fn persists_session_messages_and_usage() {
         let database = database();
         let session = database.create_session("test", "model").unwrap();
         database
-            .save_exchange(
+            .save_turn(
                 &session.id,
-                &Message::user("Explain Rust ownership"),
-                &Message::assistant("Ownership tracks values."),
+                &[
+                    Message::user("Explain Rust ownership"),
+                    Message::assistant("Ownership tracks values."),
+                ],
                 &Usage {
                     prompt_tokens: 10,
                     completion_tokens: 5,
@@ -401,10 +549,9 @@ mod tests {
         let database = database();
         let session = database.create_session("test", "model").unwrap();
         database
-            .save_exchange(
+            .save_turn(
                 &session.id,
-                &Message::user("hello"),
-                &Message::assistant("hi"),
+                &[Message::user("hello"), Message::assistant("hi")],
                 &Usage::default(),
                 "stop",
             )
@@ -421,10 +568,9 @@ mod tests {
         let database = database();
         let session = database.create_session("test", "model").unwrap();
         database
-            .save_exchange(
+            .save_turn(
                 &session.id,
-                &Message::user("hello"),
-                &Message::assistant("hi"),
+                &[Message::user("hello"), Message::assistant("hi")],
                 &Usage {
                     prompt_tokens: 4,
                     completion_tokens: 2,
@@ -445,10 +591,9 @@ mod tests {
         let database = database();
         let session = database.create_session("test", "model").unwrap();
         database
-            .save_exchange(
+            .save_turn(
                 &session.id,
-                &Message::user("hello"),
-                &Message::assistant("hi"),
+                &[Message::user("hello"), Message::assistant("hi")],
                 &Usage::default(),
                 "stop",
             )
@@ -474,10 +619,12 @@ mod tests {
         let database = database();
         let session = database.create_session("test", "model").unwrap();
         database
-            .save_exchange(
+            .save_turn(
                 &session.id,
-                &Message::user("How does ownership work in Rust"),
-                &Message::assistant("Ownership tracks each value's owner."),
+                &[
+                    Message::user("How does ownership work in Rust"),
+                    Message::assistant("Ownership tracks each value's owner."),
+                ],
                 &Usage::default(),
                 "stop",
             )

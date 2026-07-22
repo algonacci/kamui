@@ -37,8 +37,8 @@ effort or operational risk is disproportionate to their immediate value.
   These latency figures are displayed only, not persisted.
 - Chat requests offer the model read-only `read_file` and `list_directory` tools. When the model
   calls one, Kamui runs a bounded streaming agent loop: it executes the tool, prints a one-line
-  trace, feeds the result back, and continues until the model returns a plain answer. Only the user
-  prompt and final answer are persisted; intermediate tool messages are not.
+  trace, feeds the result back, and continues until the model returns a plain answer. The whole turn
+  is persisted, including the tool requests and results, so resumed sessions replay them.
 - Session IDs may be resolved from an unambiguous prefix. The UI normally displays the first eight
   characters.
 - Resume displays the six most recent messages and reports how many earlier messages were omitted.
@@ -104,10 +104,11 @@ streaming agent loop bounded by `MAX_TOOL_ROUNDS`: it streams a turn, and if the
 tools it records the request, runs each tool, appends the results, and requests again until a plain
 answer arrives.
 
-Still unbuilt: tool-message persistence. Only the user prompt and final assistant answer are saved,
-so resumed sessions do not replay intermediate tool calls and the `messages.role` CHECK constraint
-still excludes `'tool'`. Recorded usage is the final round's, not the whole turn's. The terminal
-runner, mutation tools, and a durable audit trail also remain.
+Whole turns are persisted, including tool messages. A `user_version = 3` migration rebuilds the
+`messages` table to allow the `'tool'` role and store `tool_calls` (JSON) and `tool_call_id`;
+`save_turn` writes the prompt, tool requests, tool results, and final answer atomically, so resumed
+sessions replay tool interactions. Recorded usage is still the final round's, not the whole turn's.
+The terminal runner, mutation tools, per-turn usage accounting, and a durable audit trail remain.
 
 ## Storage Decisions
 

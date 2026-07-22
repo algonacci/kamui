@@ -28,6 +28,8 @@ effort or operational risk is disproportionate to their immediate value.
   failed streams are not added to history.
 - The first completed exchange receives an AI-generated title. Title-generation usage is recorded
   with kind `title`, while the request count shown to users counts only primary chat requests.
+- Each chat usage row records the model that produced it (`user_version = 5`). `/stats` shows the
+  session totals and, when a session used more than one model, a per-model token breakdown.
 - Streaming deltas are printed immediately. Usage and finish reason are shown after completion. A
   braille spinner animates from when each request is sent until the first token arrives, then erases
   itself so the response starts on a clean line.

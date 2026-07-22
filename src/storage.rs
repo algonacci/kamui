@@ -717,6 +717,41 @@ mod tests {
     }
 
     #[test]
+    fn model_stats_break_down_usage_by_model() {
+        let database = database();
+        let session = database.create_session("test", "sol").unwrap();
+        let turn = |model: &str, total: u64| {
+            database
+                .save_turn(
+                    &session.id,
+                    &[Message::user("hi"), Message::assistant("yo")],
+                    &Usage {
+                        prompt_tokens: total,
+                        completion_tokens: 0,
+                        total_tokens: total,
+                    },
+                    model,
+                    "stop",
+                )
+                .unwrap();
+        };
+        turn("gpt-5.6-sol", 15);
+        turn("codeqwen:latest", 6);
+        turn("gpt-5.6-sol", 4);
+
+        let stats = database.model_stats(&session.id).unwrap();
+
+        // Two distinct models, ordered by total tokens descending.
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].model, "gpt-5.6-sol");
+        assert_eq!(stats[0].request_count, 2);
+        assert_eq!(stats[0].total_tokens, 19);
+        assert_eq!(stats[1].model, "codeqwen:latest");
+        assert_eq!(stats[1].request_count, 1);
+        assert_eq!(stats[1].total_tokens, 6);
+    }
+
+    #[test]
     fn settings_round_trip_and_overwrite() {
         let database = database();
         assert_eq!(database.get_setting("active_profile").unwrap(), None);

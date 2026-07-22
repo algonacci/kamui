@@ -25,7 +25,16 @@ async fn main() -> Result<()> {
         }
     };
 
-    let config = Config::load()?;
+    let config = match Config::load()? {
+        config::Loaded::Ready(config) => config,
+        config::Loaded::NeedsSetup(path) => {
+            println!("Kamui needs a bit of setup before the first chat.");
+            println!("Edit your config and add your provider api_key (and model):");
+            println!("  {}", path.display());
+            println!("Then run kamui again.");
+            return Ok(());
+        }
+    };
     let provider = OpenAIProvider::new(config.api_key, config.base_url);
     let database = Database::open()?;
     let project = ProjectContext::discover()?;

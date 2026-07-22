@@ -35,6 +35,13 @@ pub struct Config {
     pub context_window: Option<u64>,
 }
 
+/// The result of loading configuration: either usable settings, or a signal that the user still
+/// needs to fill in the freshly scaffolded (or key-less) global config.
+pub enum Loaded {
+    Ready(Config),
+    NeedsSetup(PathBuf),
+}
+
 /// The on-disk shape of a `kamui.toml`. Every field is optional so global and project files can be
 /// partial and layer over one another.
 #[derive(Debug, Default, Deserialize)]
@@ -54,16 +61,24 @@ impl Config {
     /// Load configuration from the global `kamui.toml`, layering an optional project `kamui.toml`
     /// from the working directory on top. On first run the global file is scaffolded and the caller
     /// is asked to fill it in. No environment variables participate in provider or model settings.
-    pub fn load() -> Result<Self> {
+    pub fn load() -> Result<Loaded> {
         let global_path = global_config_path()?;
         if !global_path.exists() {
             scaffold_global(&global_path)?;
-            anyhow::bail!(
-                "Created a config template at {}. Add your provider api_key (and model), then run kamui again.",
-                global_path.display()
-            );
+            return Ok(Loaded::NeedsSetup(global_path));
         }
         let global = read_config_file(&global_path)?;
+
+        // The template ships with an empty api_key, so an unfilled global file is still "needs
+        // setup" rather than a hard error.
+        let has_key = global
+            .provider
+            .as_ref()
+            .and_then(|provider| provider.api_key.as_ref())
+            .is_some_and(|key| !key.trim().is_empty());
+        if !has_key {
+            return Ok(Loaded::NeedsSetup(global_path));
+        }
 
         let project_path = std::env::current_dir()
             .context("could not determine the working directory")?
@@ -74,7 +89,7 @@ impl Config {
             None
         };
 
-        resolve(global, project)
+        resolve(global, project).map(Loaded::Ready)
     }
 }
 

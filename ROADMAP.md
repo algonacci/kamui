@@ -116,7 +116,7 @@ Raw `git diff` remains available for code review because a condensed diff can om
 
 ## Phase 5: Providers and Models
 
-- [ ] Structured configuration file (`kamui.toml`) for provider, model, and settings
+- [x] Structured configuration file (`kamui.toml`) for provider, model, and settings
 - [ ] Native Anthropic provider
 - [ ] Native Gemini provider
 - [ ] Provider and model discovery
@@ -125,14 +125,12 @@ Raw `git diff` remains available for code review because a condensed diff can om
 - [ ] Provider and model statistics
 - [ ] Document OpenAI-compatible services (OpenRouter, Ollama, LM Studio, Groq, DeepSeek, LiteLLM)
 
-Configuration design (decided, not yet built): a TOML config replaces `.env` and `dotenvy`. The
-config file is named `kamui.toml` in both locations. A global `kamui.toml` in the OS config
-directory may hold the API key. A per-project `kamui.toml` in the repository root is non-secret only
-and must reject `api_key` with a clear error. Resolution precedence is project `kamui.toml`, then
-global `kamui.toml`, then built-in defaults. No environment variables participate in provider or
-model configuration. First run scaffolds the global config directory and
-a commented `config.toml` template, then stops so the user can fill in the key. This work is
-independent of the Phase 3 runtime and may be pulled forward.
+Configuration is built (`src/config.rs`): a TOML `kamui.toml` replaces `.env` and `dotenvy`. A
+global `kamui.toml` in the OS config directory may hold the API key; a per-project `kamui.toml` in
+the working directory is non-secret only and is rejected if it sets `api_key`. Resolution precedence
+is project, then global, then built-in defaults, with no environment variables in provider or model
+configuration. First run scaffolds the global config directory with a commented template and exits
+so the user can fill in the key. `KAMUI_DATA_DIR` still overrides only the database location.
 
 ## Phase 6: Terminal Experience
 

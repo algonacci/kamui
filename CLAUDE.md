@@ -86,7 +86,8 @@ The process working directory is the project root.
 
 Important modules:
 
-- `src/main.rs`: environment loading, CLI argument parsing, dependency construction, and startup.
+- `src/main.rs`: CLI argument parsing, configuration loading, dependency construction, and startup.
+- `src/config.rs`: `kamui.toml` discovery, global/project layering, and the first-run scaffold.
 - `src/chat.rs`: interactive loop, streaming display, session commands, title generation, the
   streaming tool agent loop, and graceful shutdown.
 - `src/context.rs`: project instruction discovery and safe `@file`, `@diff`, and `@staged`
@@ -142,22 +143,29 @@ The terminal runner, mutation tools, per-turn usage accounting, and a durable au
 
 ## Configuration
 
-Configuration precedence is:
+Provider and model settings come from `kamui.toml` files; `src/config.rs` owns loading. No
+environment variables participate in provider or model configuration — `.env`/dotenvy support was
+removed. Precedence is:
 
-1. Process environment.
-2. `.env` in the current working directory.
-3. Global Kamui `.env` in the OS configuration directory.
+1. Project `kamui.toml` in the working directory (non-secret only).
+2. Global `kamui.toml` in the OS configuration directory (may hold the API key).
+3. Built-in defaults.
 
-Relevant variables:
+Fields:
 
-- `OPENAI_API_KEY`: required for the current provider.
-- `OPENAI_BASE_URL`: defaults to `https://api.openai.com/v1`.
-- `OPENAI_MODEL`: required model identifier.
-- `KAMUI_CONTEXT_WINDOW`: optional integer used for context percentage reporting.
-- `KAMUI_DATA_DIR`: optional storage override.
+- `model`: required model identifier (no default).
+- `context_window`: optional integer used for context-percentage reporting.
+- `[provider].base_url`: OpenAI-compatible base URL, defaults to `https://api.openai.com/v1`.
+- `[provider].api_key`: required; allowed only in the global file. A project file that sets it is
+  rejected with an error, so a committed project config can never leak a key.
 
-Never commit `.env`, API keys, credentials, provider responses containing secrets, or local database
-files. If a key appears in logs, chat, commits, or screenshots, advise immediate rotation.
+On first run, when no global `kamui.toml` exists, Kamui scaffolds the global config directory with a
+commented template and exits, asking the user to fill in the key. `KAMUI_DATA_DIR` remains an
+environment override for the database location only (a container/ops concern, not provider config).
+
+Never commit API keys, credentials, provider responses containing secrets, or local database files.
+A project `kamui.toml` is safe to commit because it cannot contain a key. If a key appears in logs,
+chat, commits, or screenshots, advise immediate rotation.
 
 OpenRouter, Ollama, LM Studio, Groq, DeepSeek, and LiteLLM may work through an OpenAI-compatible base
 URL. Describe these as OpenAI-compatible services, not native provider integrations. Native

@@ -15,17 +15,12 @@ pub struct OpenAIProvider {
 }
 
 impl OpenAIProvider {
-    pub fn from_env() -> Result<Self> {
-        let api_key =
-            std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY is not configured")?;
-        let base_url = std::env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-
-        Ok(Self {
+    pub fn new(api_key: String, base_url: String) -> Self {
+        Self {
             client: Client::new(),
             api_key,
             base_url: base_url.trim_end_matches('/').to_string(),
-        })
+        }
     }
 }
 

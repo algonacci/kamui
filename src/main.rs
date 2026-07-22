@@ -1,19 +1,18 @@
 mod chat;
+mod config;
 mod context;
 mod provider;
 mod storage;
 mod tools;
 
 use anyhow::{Context, Result};
+use config::Config;
 use context::ProjectContext;
-use directories::BaseDirs;
 use provider::openai::OpenAIProvider;
 use storage::Database;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    load_environment();
-
     let resume_id = match parse_command()? {
         Command::Chat(resume_id) => resume_id,
         Command::Help => {
@@ -26,23 +25,15 @@ async fn main() -> Result<()> {
         }
     };
 
-    let provider = OpenAIProvider::from_env()?;
-    let model = std::env::var("OPENAI_MODEL").context("OPENAI_MODEL is not configured")?;
-    let context_window = std::env::var("KAMUI_CONTEXT_WINDOW")
-        .ok()
-        .map(|value| {
-            value
-                .parse()
-                .context("KAMUI_CONTEXT_WINDOW must be an integer")
-        })
-        .transpose()?;
+    let config = Config::load()?;
+    let provider = OpenAIProvider::new(config.api_key, config.base_url);
     let database = Database::open()?;
     let project = ProjectContext::discover()?;
 
     chat::start_chat(
         &provider,
-        model,
-        context_window,
+        config.model,
+        config.context_window,
         &database,
         &project,
         resume_id,
@@ -50,14 +41,6 @@ async fn main() -> Result<()> {
     .await?;
 
     Ok(())
-}
-
-fn load_environment() {
-    // Local project configuration takes precedence; the global file fills missing values.
-    dotenvy::dotenv().ok();
-    if let Some(base_dirs) = BaseDirs::new() {
-        dotenvy::from_path(base_dirs.config_dir().join("kamui").join(".env")).ok();
-    }
 }
 
 enum Command {

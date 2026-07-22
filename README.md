@@ -8,23 +8,27 @@ the chat interface.
 
 ## Configuration
 
-For development, create a `.env` file in the repository based on `.env.example`. An installed
-binary can be run from any directory by placing the same file in the OS configuration directory:
+Kamui is configured with a `kamui.toml` file. The first time you run it, Kamui creates a commented
+template in your OS configuration directory and exits so you can fill in your API key:
 
-| Platform | Configuration file |
+| Platform | Global config file |
 | --- | --- |
-| Windows | `%APPDATA%\\kamui\\.env` |
-| Linux | `~/.config/kamui/.env` |
-| macOS | `~/Library/Application Support/kamui/.env` |
+| Windows | `%APPDATA%\\kamui\\kamui.toml` |
+| Linux | `~/.config/kamui/kamui.toml` |
+| macOS | `~/Library/Application Support/kamui/kamui.toml` |
 
-Process environment variables take precedence, followed by a local `.env`, then the global file.
+```toml
+model = "gpt-5.5"
+# context_window = 128000
 
-```env
-OPENAI_API_KEY=sk-xxxxxxxx
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-5.5
-KAMUI_CONTEXT_WINDOW=128000
+[provider]
+base_url = "https://api.openai.com/v1"
+api_key = "sk-xxxxxxxx"
 ```
+
+You may also place a `kamui.toml` in a project directory to override `model`, `context_window`, and
+`provider.base_url` for that project. A project file **must not** contain an `api_key` — Kamui
+rejects it, so a project config is safe to commit. The API key lives only in the global file.
 
 Any service implementing the OpenAI Chat Completions API can be used by changing the base URL,
 model, and API key. Chat responses use the API's SSE streaming mode and are rendered as deltas

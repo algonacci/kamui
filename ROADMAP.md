@@ -124,11 +124,17 @@ Raw `git diff` remains available for code review because a condensed diff can om
 - [x] Structured configuration file (`kamui.toml`) for provider, model, and settings
 - [x] Runtime model switching
 - [x] Document OpenAI-compatible services (OpenRouter, Ollama, LM Studio, Groq, DeepSeek, LiteLLM)
-- [ ] Provider and model discovery
-- [ ] Temperature and model parameters
-- [ ] Provider and model statistics
+- [ ] Provider and model statistics — optional; per-model token usage would help model comparison
+  but needs a small schema change to record the model per usage row
+- [ ] Temperature and model parameters (not planned — coding agents keep defaults simple; Codex and
+  Claude Code do not expose these either)
+- [ ] Provider and model discovery (not planned — profiles are defined manually in `kamui.toml`)
 - [ ] Native Anthropic provider (not planned)
 - [ ] Native Gemini provider (not planned)
+
+Phase 5 is practically complete: configuration, runtime model switching with profiles and shared
+credentials, and OpenAI-compatible provider documentation all shipped. The remaining items are
+either descoped for simplicity or a small optional stats enhancement.
 
 Configuration is built (`src/config.rs`): a TOML `kamui.toml` replaces `.env` and `dotenvy`. A
 global `kamui.toml` in the OS config directory may hold the API key; a per-project `kamui.toml` in

@@ -46,6 +46,10 @@ effort or operational risk is disproportionate to their immediate value.
   approval; declining feeds a refusal back to the model. Commands run in the project directory with
   stdin disabled, a 30-second kill timeout, and a 16 KiB output cap, and the result includes the
   exit code with captured stdout and stderr.
+- When the external `rtk` binary is available (detected once per process), simple approved commands
+  are prefixed with `rtk` to compress their output. Commands with shell operators, commands already
+  prefixed with `rtk`, and all commands on systems without RTK run directly. The first result line
+  records the exact command line executed.
 - Session IDs may be resolved from an unambiguous prefix. The UI normally displays the first eight
   characters.
 - Resume displays the six most recent messages and reports how many earlier messages were omitted.
@@ -154,7 +158,9 @@ Anthropic and Gemini support requires dedicated adapters.
 
 ## RTK Decision
 
-[RTK](https://github.com/rtk-ai/rtk) is planned as an optional external execution backend in Phase 3.
+[RTK](https://github.com/rtk-ai/rtk) is an optional external execution backend, now wired into
+`run_command`: it is detected once per process and simple commands are prefixed with `rtk`, while
+anything with shell operators, an existing `rtk` prefix, or a system without RTK runs directly.
 It is a Rust application, but it currently exposes a binary target rather than a stable public Rust
 library API. Do not add it as a Cargo dependency or copy its source into Kamui.
 

@@ -152,15 +152,20 @@ it (`y`/`yes`); anything else declines and tells the model so. Commands run in t
 with input disabled, a 30-second timeout, and a capped amount of captured output, and the model sees
 the exit code alongside stdout and stderr. File editing is not implemented yet.
 
+If the [RTK](https://github.com/rtk-ai/rtk) binary is installed, simple approved commands are
+automatically prefixed with `rtk` so their output is compressed before it reaches the model. RTK is
+optional: commands with shell operators and systems without RTK always run directly, and the first
+line of every result shows the exact command that ran.
+
 The whole turn is saved to session history, including the tool calls and their results, so a resumed
 session replays the tool interactions the model relied on.
 
 ## RTK integration direction
 
-[RTK](https://github.com/rtk-ai/rtk) will be an optional execution backend when Kamui gains terminal
-tools. Supported commands can run through RTK so compact test, build, search, Git, and container
-output reaches the model. Kamui will still own command permissions, timeouts, cancellation, output
-limits, and audit records.
+[RTK](https://github.com/rtk-ai/rtk) is an optional execution backend for the `run_command` tool.
+Supported commands run through RTK so compact test, build, search, Git, and container output reaches
+the model. Kamui still owns command permissions, timeouts, cancellation, output limits, and the
+recorded command line; RTK only compresses output.
 
 RTK is not currently used by chat or `@diff`, and users do not need to install it yet. Keeping raw
 diff context avoids dropping details needed for code review. The future integration will detect the

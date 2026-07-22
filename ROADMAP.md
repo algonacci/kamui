@@ -34,7 +34,7 @@ re-add without a concrete user request.
 - [x] List directory tool
 - [x] Safe terminal command runner with permission, timeout, and output limits
 - [x] Preserve raw output on failures and command exit codes
-- [ ] Optional RTK execution backend with direct-command fallback
+- [x] Optional RTK execution backend with direct-command fallback
 - [ ] Patch file tool with confirmation
 - [ ] Multi-file editing
 - [ ] Git status, diff, and commit integration
@@ -54,8 +54,12 @@ The `run_command` tool executes shell commands in the project directory. Kamui o
 policy: any tool that reports `requires_confirmation` (only `run_command` so far) is shown to the
 user and must be approved with `y`/`yes` before it runs; declining feeds a refusal back to the
 model. Commands run with stdin disabled, a 30-second timeout that kills the process, and a 16 KiB
-output cap; the result carries the exit code plus captured stdout and stderr. RTK routing and a
-direct-fallback policy are not built yet, so commands always run directly.
+output cap; the result carries the exit code plus captured stdout and stderr.
+
+RTK routing is in place: the `rtk` binary is detected once per process, and simple commands are
+prefixed with `rtk` so compressed output reaches model context. Commands containing shell operators,
+commands already prefixed with `rtk`, and every command on systems without RTK run directly. The
+first line of each result records the exact command line that was executed.
 
 Tool messages are now persisted. A `user_version = 3` migration rebuilds the `messages` table to
 allow the `'tool'` role and store `tool_calls` and `tool_call_id`, and a whole turn (prompt, tool

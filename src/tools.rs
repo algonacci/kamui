@@ -161,6 +161,37 @@ struct RunCommandTool {
     root: PathBuf,
 }
 
+/// Whether the external `rtk` binary is available. Detected once per process; RTK is an optional
+/// output-compression backend, never a requirement.
+fn rtk_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        std::process::Command::new("rtk")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Decide whether to route a command through `rtk`. Only simple commands are routed: with shell
+/// operators the prefix would apply to the first segment only, so those run directly. Commands the
+/// model already prefixed with `rtk` are left untouched.
+fn route_through_rtk(command: &str, rtk_is_available: bool) -> bool {
+    if !rtk_is_available {
+        return false;
+    }
+    let trimmed = command.trim();
+    if trimmed == "rtk" || trimmed.starts_with("rtk ") {
+        return false;
+    }
+    const SHELL_OPERATORS: [char; 9] = ['&', '|', ';', '>', '<', '`', '$', '(', '\n'];
+    !trimmed.contains(SHELL_OPERATORS)
+}
+
 #[async_trait]
 impl Tool for RunCommandTool {
     fn name(&self) -> &'static str {
@@ -200,6 +231,14 @@ impl Tool for RunCommandTool {
             .and_then(|command| command.as_str())
             .context("run_command requires a 'command' string argument")?;
 
+        // Route supported invocations through the optional rtk binary to compress output before it
+        // reaches model context; everything else runs the command directly.
+        let executed = if route_through_rtk(command, rtk_available()) {
+            format!("rtk {}", command.trim())
+        } else {
+            command.to_string()
+        };
+
         let (shell, flag) = if cfg!(windows) {
             ("cmd", "/C")
         } else {
@@ -207,7 +246,7 @@ impl Tool for RunCommandTool {
         };
         let child = tokio::process::Command::new(shell)
             .arg(flag)
-            .arg(command)
+            .arg(&executed)
             .current_dir(&self.root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -217,9 +256,10 @@ impl Tool for RunCommandTool {
             .context("failed to start the command")?;
 
         match tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output()).await {
-            Ok(result) => Ok(format_command_output(
-                &result.context("failed to run the command")?,
-            )),
+            Ok(result) => {
+                let output = format_command_output(&result.context("failed to run the command")?);
+                Ok(format!("command: {executed}\n{output}"))
+            }
             Err(_) => Ok(format!(
                 "Error: command timed out after {} seconds and was terminated",
                 COMMAND_TIMEOUT.as_secs()
@@ -379,7 +419,26 @@ mod tests {
         };
 
         let output = registry.dispatch(&call).await;
+        assert!(output.starts_with("command: "));
         assert!(output.contains("exit code: 0"));
         assert!(output.contains("kamui-ok"));
+    }
+
+    #[test]
+    fn routes_only_simple_commands_when_rtk_is_available() {
+        assert!(route_through_rtk("cargo test", true));
+        assert!(route_through_rtk("  git status  ", true));
+
+        // Never without rtk.
+        assert!(!route_through_rtk("cargo test", false));
+        // Never double-prefix a command the model already routed.
+        assert!(!route_through_rtk("rtk cargo test", true));
+        assert!(!route_through_rtk("rtk", true));
+        // Shell operators would leave rtk applied to the first segment only.
+        assert!(!route_through_rtk("cargo build && cargo test", true));
+        assert!(!route_through_rtk("cargo test | tail -5", true));
+        assert!(!route_through_rtk("echo a; echo b", true));
+        assert!(!route_through_rtk("cargo test > out.txt", true));
+        assert!(!route_through_rtk("echo $HOME", true));
     }
 }

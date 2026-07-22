@@ -28,11 +28,12 @@ re-add without a concrete user request.
 
 ## Phase 3: Coding Agent Runtime
 
-- [ ] Provider-agnostic tool-call protocol
+- [x] Provider-agnostic tool-call protocol
+- [x] Tool runtime, dispatch, and streaming agent loop
+- [x] Read file tool
 - [ ] Safe terminal command runner with permission, timeout, and output limits
 - [ ] Optional RTK execution backend with direct-command fallback
 - [ ] Preserve raw output on failures and command exit codes
-- [ ] Read file tool
 - [ ] Patch file tool with confirmation
 - [ ] Multi-file editing
 - [ ] Git status, diff, and commit integration
@@ -40,11 +41,19 @@ re-add without a concrete user request.
 - [ ] Cancellation and failed-tool recovery
 
 Progress: the provider-agnostic tool-call types (`ToolDefinition`, `ToolCall`, tool-request and
-tool-result messages) and their OpenAI serialization plus non-streaming response parsing have landed
-with tests. The core no longer serializes its own message types into an OpenAI-shaped payload;
-wire mapping lives in the provider. Remaining for the protocol: a tool runtime and dispatch layer,
-the agent loop that executes calls and feeds results back, streaming tool-call assembly, and
-persistence of tool messages.
+tool-result messages), their OpenAI serialization, and both non-streaming and streaming (index-keyed
+delta reassembly) parsing have landed with tests. The core no longer serializes its own message
+types into an OpenAI-shaped payload; wire mapping lives in the provider. A `ToolRegistry` dispatches
+calls, a read-only `read_file` tool reuses the shared `@file` path-safety checks, and the chat loop
+runs a streaming agent loop (bounded by a per-turn round limit) that executes requested tools and
+feeds results back until the model returns a plain answer. Tool failures are returned to the model
+as text so it can recover.
+
+Not yet done: tool messages are not persisted. Only the user prompt and the final assistant answer
+are saved, so resumed sessions do not replay intermediate tool calls, and the `messages.role` CHECK
+constraint still excludes `'tool'`. Recorded usage is the final round's, not the whole turn's. Full
+tool-message persistence and per-turn usage accounting remain future work, alongside the terminal
+runner, mutation tools, and a durable audit trail.
 
 RTK is an execution optimization, not the command permission layer. When installed, Kamui should
 route supported terminal commands through the external `rtk` binary to reduce tool output before it

@@ -47,8 +47,6 @@ impl Message {
     }
 
     /// An assistant turn that requests one or more tool calls.
-    // Exercised by tests; wired into the live loop in the next Phase 3 increment.
-    #[allow(dead_code)]
     pub fn tool_request(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: Role::Assistant,
@@ -59,7 +57,6 @@ impl Message {
     }
 
     /// The result of executing a tool, fed back to the model.
-    #[allow(dead_code)]
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: Role::Tool,
@@ -134,7 +131,11 @@ pub struct ChatResponse {
 #[derive(Debug)]
 pub enum StreamEvent {
     Delta(String),
-    Done { usage: Usage, finish_reason: String },
+    Done {
+        usage: Usage,
+        finish_reason: String,
+        tool_calls: Vec<ToolCall>,
+    },
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -214,6 +214,49 @@ struct StreamChoice {
 #[derive(Debug, Deserialize)]
 struct StreamDelta {
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<StreamToolCallDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamToolCallDelta {
+    index: usize,
+    id: Option<String>,
+    function: Option<StreamFunctionDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamFunctionDelta {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+/// Accumulates the pieces of a streamed response until the terminating event. Tool calls arrive
+/// as index-keyed fragments across many deltas, so they are reassembled here.
+#[derive(Default)]
+struct StreamState {
+    usage: Usage,
+    finish_reason: String,
+    tool_calls: Vec<PartialToolCall>,
+}
+
+#[derive(Clone, Default)]
+struct PartialToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn assemble_tool_calls(partials: Vec<PartialToolCall>) -> Vec<ToolCall> {
+    partials
+        .into_iter()
+        .filter(|partial| !partial.id.is_empty() && !partial.name.is_empty())
+        .map(|partial| ToolCall {
+            id: partial.id,
+            name: partial.name,
+            arguments: partial.arguments,
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -294,8 +337,7 @@ async fn read_stream(
     sender: &mpsc::UnboundedSender<Result<StreamEvent>>,
 ) -> Result<()> {
     let mut buffer = Vec::new();
-    let mut usage = Usage::default();
-    let mut finish_reason = String::new();
+    let mut state = StreamState::default();
 
     while let Some(chunk) = response
         .chunk()
@@ -311,11 +353,17 @@ async fn read_stream(
                 2
             };
             buffer.drain(..delimiter);
-            if parse_event(&event, sender, &mut usage, &mut finish_reason)? {
+            if parse_event(&event, sender, &mut state)? {
+                let StreamState {
+                    usage,
+                    finish_reason,
+                    tool_calls,
+                } = std::mem::take(&mut state);
                 sender
                     .send(Ok(StreamEvent::Done {
                         usage,
                         finish_reason,
+                        tool_calls: assemble_tool_calls(tool_calls),
                     }))
                     .map_err(|_| anyhow::anyhow!("stream consumer disconnected"))?;
                 return Ok(());
@@ -336,8 +384,7 @@ fn find_event_end(buffer: &[u8]) -> Option<usize> {
 fn parse_event(
     event: &[u8],
     sender: &mpsc::UnboundedSender<Result<StreamEvent>>,
-    usage: &mut Usage,
-    finish_reason: &mut String,
+    state: &mut StreamState,
 ) -> Result<bool> {
     let event = std::str::from_utf8(event).context("provider returned invalid UTF-8")?;
     for line in event.lines() {
@@ -351,16 +398,35 @@ fn parse_event(
         let chunk: OpenAIStreamChunk =
             serde_json::from_str(data).context("provider returned an invalid stream event")?;
         if let Some(chunk_usage) = chunk.usage {
-            *usage = chunk_usage;
+            state.usage = chunk_usage;
         }
         for choice in chunk.choices {
             if let Some(reason) = choice.finish_reason {
-                *finish_reason = reason;
+                state.finish_reason = reason;
             }
             if let Some(content) = choice.delta.content.filter(|content| !content.is_empty()) {
                 sender
                     .send(Ok(StreamEvent::Delta(content)))
                     .map_err(|_| anyhow::anyhow!("stream consumer disconnected"))?;
+            }
+            for delta in choice.delta.tool_calls {
+                if delta.index >= state.tool_calls.len() {
+                    state
+                        .tool_calls
+                        .resize(delta.index + 1, PartialToolCall::default());
+                }
+                let partial = &mut state.tool_calls[delta.index];
+                if let Some(id) = delta.id {
+                    partial.id = id;
+                }
+                if let Some(function) = delta.function {
+                    if let Some(name) = function.name {
+                        partial.name.push_str(&name);
+                    }
+                    if let Some(arguments) = function.arguments {
+                        partial.arguments.push_str(&arguments);
+                    }
+                }
             }
         }
     }
@@ -374,42 +440,74 @@ mod tests {
     #[test]
     fn parses_delta_finish_and_usage_events() {
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        let mut usage = Usage::default();
-        let mut finish_reason = String::new();
+        let mut state = StreamState::default();
 
         assert!(
             !parse_event(
                 br#"data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}"#,
                 &sender,
-                &mut usage,
-                &mut finish_reason,
+                &mut state,
             )
             .unwrap()
         );
         assert!(!parse_event(
             br#"data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#,
             &sender,
-            &mut usage,
-            &mut finish_reason,
+            &mut state,
         )
         .unwrap());
         assert!(
             !parse_event(
                 br#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
                 &sender,
-                &mut usage,
-                &mut finish_reason,
+                &mut state,
             )
             .unwrap()
         );
-        assert!(parse_event(b"data: [DONE]", &sender, &mut usage, &mut finish_reason,).unwrap());
+        assert!(parse_event(b"data: [DONE]", &sender, &mut state).unwrap());
 
         match receiver.try_recv().unwrap().unwrap() {
             StreamEvent::Delta(content) => assert_eq!(content, "Hello"),
             StreamEvent::Done { .. } => panic!("expected a delta"),
         }
-        assert_eq!(usage.total_tokens, 5);
-        assert_eq!(finish_reason, "stop");
+        assert_eq!(state.usage.total_tokens, 5);
+        assert_eq!(state.finish_reason, "stop");
+    }
+
+    #[test]
+    fn assembles_tool_calls_streamed_across_deltas() {
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        let mut state = StreamState::default();
+
+        parse_event(
+            br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{\"path\":\""}}]},"finish_reason":null}]}"#,
+            &sender,
+            &mut state,
+        )
+        .unwrap();
+        parse_event(
+            br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"src/main.rs\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+            &sender,
+            &mut state,
+        )
+        .unwrap();
+
+        let calls = assemble_tool_calls(state.tool_calls);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].arguments, r#"{"path":"src/main.rs"}"#);
+    }
+
+    #[test]
+    fn drops_incomplete_tool_calls() {
+        // A fragment that never received an id or name must not become a tool call.
+        let partials = vec![PartialToolCall {
+            id: String::new(),
+            name: String::new(),
+            arguments: "{}".to_string(),
+        }];
+        assert!(assemble_tool_calls(partials).is_empty());
     }
 
     #[test]
@@ -502,10 +600,9 @@ mod tests {
     #[test]
     fn invalid_stream_json_is_an_error() {
         let (sender, _receiver) = mpsc::unbounded_channel();
-        let mut usage = Usage::default();
-        let mut finish_reason = String::new();
+        let mut state = StreamState::default();
 
-        assert!(parse_event(b"data: {not json}", &sender, &mut usage, &mut finish_reason).is_err());
+        assert!(parse_event(b"data: {not json}", &sender, &mut state).is_err());
     }
 
     #[test]

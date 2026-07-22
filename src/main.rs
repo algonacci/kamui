@@ -2,6 +2,7 @@ mod chat;
 mod context;
 mod provider;
 mod storage;
+mod tools;
 
 use anyhow::{Context, Result};
 use context::ProjectContext;

@@ -62,27 +62,10 @@ impl ProjectContext {
             let (label, content) = match reference.as_str() {
                 "diff" => ("git diff".to_string(), self.read_git_diff(false)?),
                 "staged" => ("git diff --staged".to_string(), self.read_git_diff(true)?),
-                _ => {
-                    let relative = Path::new(&reference);
-                    if relative.is_absolute() {
-                        anyhow::bail!("@file path must be relative to the project: {reference}");
-                    }
-
-                    let path = self.root.join(relative).canonicalize().with_context(|| {
-                        format!(
-                            "could not read @{reference} relative to {}",
-                            self.root.display()
-                        )
-                    })?;
-                    if !path.starts_with(&self.root) {
-                        anyhow::bail!("@file path is outside the project: {reference}");
-                    }
-                    if !path.is_file() {
-                        anyhow::bail!("@file path is not a file: {reference}");
-                    }
-
-                    (relative.display().to_string(), read_text_file(&path)?)
-                }
+                _ => (
+                    reference.clone(),
+                    read_project_file(&self.root, &reference)?,
+                ),
             };
 
             total_bytes += content.len();
@@ -132,6 +115,29 @@ fn file_references(input: &str) -> Vec<String> {
                 .then(|| reference.to_string())
         })
         .collect()
+}
+
+/// Resolve a project-relative reference to a file and read it, rejecting anything that escapes the
+/// project root. Shared by `@file` expansion and the read_file tool so path safety lives in one
+/// place.
+pub fn read_project_file(root: &Path, reference: &str) -> Result<String> {
+    let relative = Path::new(reference);
+    if relative.is_absolute() {
+        anyhow::bail!("path must be relative to the project: {reference}");
+    }
+
+    let path = root
+        .join(relative)
+        .canonicalize()
+        .with_context(|| format!("could not read {reference} relative to {}", root.display()))?;
+    if !path.starts_with(root) {
+        anyhow::bail!("path is outside the project: {reference}");
+    }
+    if !path.is_file() {
+        anyhow::bail!("path is not a file: {reference}");
+    }
+
+    read_text_file(&path)
 }
 
 fn read_text_file(path: &Path) -> Result<String> {

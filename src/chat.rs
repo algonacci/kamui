@@ -1,6 +1,7 @@
 use crate::context::ProjectContext;
-use crate::provider::{ChatRequest, ChatResponse, Message, Provider, StreamEvent};
+use crate::provider::{ChatRequest, Message, Provider, StreamEvent, Usage};
 use crate::storage::{Database, Session};
+use crate::tools::ToolRegistry;
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
 use std::io::{self, Write};
@@ -8,6 +9,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 const RESUME_PREVIEW_MESSAGES: usize = 6;
+/// Upper bound on model/tool round-trips within a single user turn, to stop runaway tool loops.
+const MAX_TOOL_ROUNDS: usize = 8;
 
 pub async fn start_chat(
     provider: &dyn Provider,
@@ -24,6 +27,8 @@ pub async fn start_chat(
         println!("Instructions: {name}");
     }
     println!("Type /help for commands or exit to quit.\n");
+
+    let tools = ToolRegistry::with_defaults(project.root().to_path_buf());
 
     let (mut session, mut messages) = match resume_id {
         Some(id) => {
@@ -90,10 +95,6 @@ pub async fn start_chat(
         }
 
         let user_message = Message::user(input);
-        let mut request_messages = messages.clone();
-        if let Some(instructions) = project.system_message() {
-            request_messages.insert(0, Message::system(instructions));
-        }
         let expanded_input = match project.expand_file_references(input) {
             Ok(input) => input,
             Err(error) => {
@@ -101,39 +102,53 @@ pub async fn start_chat(
                 continue;
             }
         };
-        request_messages.push(Message::user(expanded_input));
 
-        let started = Instant::now();
-        let request = provider.chat_stream(ChatRequest {
-            model: session
-                .as_ref()
-                .map(|session| session.model.clone())
-                .unwrap_or_else(|| default_model.clone()),
-            messages: request_messages,
-            tools: Vec::new(),
-        });
-        let mut stream = tokio::select! {
-            response = request => match response {
-                Ok(stream) => stream,
-                Err(error) => {
-                    eprintln!("\nRequest failed: {error:#}\n");
-                    continue;
-                }
-            },
-            signal = tokio::signal::ctrl_c() => {
-                signal.context("failed to listen for Ctrl+C")?;
-                println!();
-                shutdown(database, session.as_ref(), context_window)?;
-                break;
+        let model = session
+            .as_ref()
+            .map(|session| session.model.clone())
+            .unwrap_or_else(|| default_model.clone());
+        let tool_definitions = tools.definitions();
+
+        // Working conversation for this turn: prior history, project instructions, and the
+        // expanded prompt. Intermediate tool messages live here only; they are not persisted.
+        let mut turn_messages = messages.clone();
+        if let Some(instructions) = project.system_message() {
+            turn_messages.insert(0, Message::system(instructions));
+        }
+        turn_messages.push(Message::user(expanded_input));
+
+        // Agent loop: stream a turn, run any tools it requests, and repeat until a plain answer.
+        let mut final_usage = Usage::default();
+        let mut final_finish = String::new();
+        let mut last_content = String::new();
+        let mut round = 0usize;
+        let assistant_message = 'agent: loop {
+            round += 1;
+            if round > MAX_TOOL_ROUNDS {
+                eprintln!(
+                    "\nStopped after {MAX_TOOL_ROUNDS} tool rounds without a final answer.\n"
+                );
+                break 'agent Message::assistant(if last_content.is_empty() {
+                    "(stopped: reached the tool-call round limit)".to_string()
+                } else {
+                    last_content.clone()
+                });
             }
-        };
 
-        println!();
-        let mut content = String::new();
-        let mut ttft: Option<Duration> = None;
-        let response = loop {
-            let event = tokio::select! {
-                event = stream.recv() => event,
+            let started = Instant::now();
+            let request = provider.chat_stream(ChatRequest {
+                model: model.clone(),
+                messages: turn_messages.clone(),
+                tools: tool_definitions.clone(),
+            });
+            let mut stream = tokio::select! {
+                response = request => match response {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        eprintln!("\nRequest failed: {error:#}\n");
+                        continue 'chat;
+                    }
+                },
                 signal = tokio::signal::ctrl_c() => {
                     signal.context("failed to listen for Ctrl+C")?;
                     println!();
@@ -141,48 +156,81 @@ pub async fn start_chat(
                     return Ok(());
                 }
             };
-            match event {
-                Some(Ok(StreamEvent::Delta(delta))) => {
-                    if ttft.is_none() {
-                        ttft = Some(started.elapsed());
+
+            println!();
+            let mut content = String::new();
+            let mut ttft: Option<Duration> = None;
+            let (usage, finish_reason, tool_calls) = loop {
+                let event = tokio::select! {
+                    event = stream.recv() => event,
+                    signal = tokio::signal::ctrl_c() => {
+                        signal.context("failed to listen for Ctrl+C")?;
+                        println!();
+                        shutdown(database, session.as_ref(), context_window)?;
+                        return Ok(());
                     }
-                    print!("{delta}");
-                    io::stdout().flush()?;
-                    content.push_str(&delta);
-                }
-                Some(Ok(StreamEvent::Done {
-                    usage,
-                    finish_reason,
-                })) => {
-                    println!("\n");
-                    break ChatResponse {
-                        content,
-                        tool_calls: Vec::new(),
+                };
+                match event {
+                    Some(Ok(StreamEvent::Delta(delta))) => {
+                        if ttft.is_none() {
+                            ttft = Some(started.elapsed());
+                        }
+                        print!("{delta}");
+                        io::stdout().flush()?;
+                        content.push_str(&delta);
+                    }
+                    Some(Ok(StreamEvent::Done {
                         usage,
                         finish_reason,
-                    };
+                        tool_calls,
+                    })) => {
+                        println!();
+                        break (usage, finish_reason, tool_calls);
+                    }
+                    Some(Err(error)) => {
+                        eprintln!("\n\nRequest failed: {error:#}\n");
+                        continue 'chat;
+                    }
+                    None => {
+                        eprintln!("\n\nRequest failed: provider stream closed unexpectedly\n");
+                        continue 'chat;
+                    }
                 }
-                Some(Err(error)) => {
-                    eprintln!("\n\nRequest failed: {error:#}\n");
-                    continue 'chat;
+            };
+            print_usage(
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+                &finish_reason,
+                ttft,
+                started.elapsed(),
+                context_window,
+            );
+            final_usage = usage;
+            final_finish = finish_reason;
+            last_content = content.clone();
+
+            if tool_calls.is_empty() {
+                break 'agent Message::assistant(content);
+            }
+
+            // The model requested tools. Record the request, run each tool, feed the results back.
+            turn_messages.push(Message::tool_request(content, tool_calls.clone()));
+            for call in &tool_calls {
+                println!(
+                    "  \u{2192} {}({})",
+                    call.name,
+                    truncate(call.arguments.trim(), 80)
+                );
+                let output = tools.dispatch(call);
+                match output.strip_prefix("Error: ") {
+                    Some(error) => println!("    ! {error}"),
+                    None => println!("    ok ({} chars)", output.chars().count()),
                 }
-                None => {
-                    eprintln!("\n\nRequest failed: provider stream closed unexpectedly\n");
-                    continue 'chat;
-                }
+                turn_messages.push(Message::tool_result(&call.id, output));
             }
         };
-        print_usage(
-            response.usage.prompt_tokens,
-            response.usage.completion_tokens,
-            response.usage.total_tokens,
-            &response.finish_reason,
-            ttft,
-            started.elapsed(),
-            context_window,
-        );
 
-        let assistant_message = Message::assistant(response.content);
         let is_first_exchange = session.is_none();
         let active_session = match session.as_mut() {
             Some(session) => session,
@@ -192,8 +240,8 @@ pub async fn start_chat(
             &active_session.id,
             &user_message,
             &assistant_message,
-            &response.usage,
-            &response.finish_reason,
+            &final_usage,
+            &final_finish,
         )?;
         if active_session.title == "New chat" {
             active_session.title = make_title(input);

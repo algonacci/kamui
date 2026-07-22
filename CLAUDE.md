@@ -172,6 +172,9 @@ Fields:
   project file that sets it anywhere is rejected, so a committed project config can never leak a key.
 - `default_profile`: chooses the starting profile when several are defined; a project file may set
   it to pin a project to a profile.
+- `tools` (under `[provider]` or `[profiles.*]`): whether to offer tools to that model, default
+  true. Set false for endpoints/models that reject the `tools` field (many small local models) so
+  plain chat still works; `/model` marks such profiles `[no tools]`.
 
 On first run, when no global `kamui.toml` exists, Kamui scaffolds the global config directory with a
 commented template and exits, asking the user to fill in the key. `KAMUI_DATA_DIR` remains an

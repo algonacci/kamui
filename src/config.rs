@@ -28,6 +28,10 @@ base_url = \"https://api.openai.com/v1\"
 # Required: your provider API key.
 api_key = \"\"
 
+# Optional: set to false if the model rejects the `tools` field (many small local
+# models). Kamui then chats without offering tools. Defaults to true.
+# tools = true
+
 # Alternatively, define several named profiles and switch between them at runtime
 # with `/model <name>`. When profiles are present the flat settings above are ignored.
 #
@@ -42,6 +46,7 @@ api_key = \"\"
 # model = \"llama3.2\"
 # base_url = \"http://localhost:11434/v1\"
 # api_key = \"ollama\"
+# tools = false          # codeqwen and many small models do not support tools
 ";
 
 /// One provider+model configuration the user can run under.
@@ -52,6 +57,9 @@ pub struct Profile {
     pub base_url: String,
     pub api_key: String,
     pub context_window: Option<u64>,
+    /// Whether to offer tools to this model. Disable for endpoints/models that reject the `tools`
+    /// field (many small local models), so plain chat still works.
+    pub tools: bool,
 }
 
 /// Fully resolved runtime configuration: every available profile plus the default choice.
@@ -96,6 +104,7 @@ struct ConfigFile {
 struct ProviderSection {
     base_url: Option<String>,
     api_key: Option<String>,
+    tools: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -104,6 +113,7 @@ struct ProfileSection {
     base_url: Option<String>,
     api_key: Option<String>,
     context_window: Option<u64>,
+    tools: Option<bool>,
 }
 
 impl Config {
@@ -204,12 +214,18 @@ fn resolve_flat(global: ConfigFile, project: Option<ConfigFile>) -> Result<Confi
         .filter(|key| !key.trim().is_empty())
         .context("api_key is not set; add it under [provider] in the global kamui.toml")?;
 
+    let tools = project_provider
+        .and_then(|provider| provider.tools)
+        .or_else(|| global_provider.and_then(|provider| provider.tools))
+        .unwrap_or(true);
+
     let profile = Profile {
         name: DEFAULT_PROFILE_NAME.to_string(),
         model,
         base_url,
         api_key,
         context_window,
+        tools,
     };
     Ok(Config {
         default_profile: profile.name.clone(),
@@ -237,6 +253,7 @@ fn resolve_profiles(global: ConfigFile, project: Option<ConfigFile>) -> Result<C
             base_url,
             api_key,
             context_window: section.context_window,
+            tools: section.tools.unwrap_or(true),
         });
     }
     // Stable ordering for listing, since the source is a hash map.
@@ -340,6 +357,19 @@ mod tests {
         // Profiles are sorted by name for stable listing.
         assert_eq!(config.profiles[0].name, "ollama");
         assert_eq!(config.profiles[1].name, "openai");
+    }
+
+    #[test]
+    fn tools_default_on_and_can_be_disabled_per_profile() {
+        let on = resolve(file("model = \"m\"\n[provider]\napi_key = \"k\""), None).unwrap();
+        assert!(on.default().tools);
+
+        let off = resolve(
+            file("[profiles.local]\nmodel = \"m\"\napi_key = \"k\"\ntools = false"),
+            None,
+        )
+        .unwrap();
+        assert!(!off.default().tools);
     }
 
     #[test]

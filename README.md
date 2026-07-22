@@ -56,7 +56,12 @@ model = "llama3.2"                        # a model you have pulled with `ollama
 [provider]
 base_url = "http://localhost:11434/v1"
 api_key = "ollama"                        # Ollama ignores this, but a value is required
+# tools = false                           # set this if the model rejects the tools field
 ```
+
+Many small local models do not support tool calling and reject requests that include tools. If you
+see an error like `<model> does not support tools`, add `tools = false` to that profile — Kamui then
+chats without offering tools.
 
 Only the global `kamui.toml` holds the key; switching providers is a one-file edit. You can also
 keep a per-project `kamui.toml` that sets just `model` and `provider.base_url` to pin a project to a

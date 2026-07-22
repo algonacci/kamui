@@ -139,7 +139,12 @@ where
         };
 
         let model = active.model.clone();
-        let tool_definitions = tools.definitions();
+        // Some models/endpoints reject the `tools` field; a profile can opt out so plain chat works.
+        let tool_definitions = if active.tools {
+            tools.definitions()
+        } else {
+            Vec::new()
+        };
 
         // Working conversation for this turn: prior history, project instructions, and the
         // expanded prompt. Intermediate tool messages live here only; they are not persisted.
@@ -618,8 +623,9 @@ where
             } else {
                 " "
             };
+            let tools = if profile.tools { "" } else { "  [no tools]" };
             println!(
-                "{marker} {:<16} {:<22} {}",
+                "{marker} {:<16} {:<22} {}{tools}",
                 profile.name, profile.model, profile.base_url
             );
         }

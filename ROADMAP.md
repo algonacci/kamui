@@ -3,6 +3,12 @@
 Kamui is evolving from a provider-agnostic chat CLI into a repository-aware coding agent. The
 roadmap prioritizes a safe, useful read-only workflow before file mutation and command execution.
 
+Status: Phases 1–3 are complete and Phase 5 is well underway. Kamui is a working coding agent — it
+explores, reads, runs commands (with approval and optional RTK compression), and edits files (with a
+diff preview and approval), persisting whole turns and letting the user interrupt with `Ctrl+C`. It
+is configured through `kamui.toml`, and `/model` switches between named provider profiles at runtime.
+The main remaining gap is Phase 4 context management for long sessions.
+
 ## Phase 1: Chat Foundation
 
 - [x] Interactive streaming chat
@@ -91,12 +97,11 @@ and rename so an interrupted write cannot leave a half-written file, and paths r
 same containment checks as reading (a new file's parent directory must already exist inside the
 project). Multi-file editing beyond one file per call remains future work.
 
-Tool messages are now persisted. A `user_version = 3` migration rebuilds the `messages` table to
-allow the `'tool'` role and store `tool_calls` and `tool_call_id`, and a whole turn (prompt, tool
-requests, tool results, final answer) is saved atomically, so resumed sessions replay the tool
-interactions. Still approximate: recorded usage is the final round's, not the sum across a turn's
-rounds. Per-turn usage accounting, the terminal runner, mutation tools, and a durable audit trail
-remain future work.
+Tool messages are persisted. A `user_version = 3` migration rebuilds the `messages` table to allow
+the `'tool'` role and store `tool_calls` and `tool_call_id`, and a whole turn (prompt, tool requests,
+tool results, final answer) is saved atomically, so resumed sessions replay the tool interactions.
+Per-turn usage now folds every agent-loop round together (output summed, input from the final round).
+`Ctrl+C` interrupts a turn and returns to the prompt without saving it, killing any running command.
 
 RTK is an execution optimization, not the command permission layer. When installed, Kamui should
 route supported terminal commands through the external `rtk` binary to reduce tool output before it
@@ -117,13 +122,13 @@ Raw `git diff` remains available for code review because a condensed diff can om
 ## Phase 5: Providers and Models
 
 - [x] Structured configuration file (`kamui.toml`) for provider, model, and settings
-- [ ] Native Anthropic provider
-- [ ] Native Gemini provider
-- [ ] Provider and model discovery
 - [x] Runtime model switching
+- [x] Document OpenAI-compatible services (OpenRouter, Ollama, LM Studio, Groq, DeepSeek, LiteLLM)
+- [ ] Provider and model discovery
 - [ ] Temperature and model parameters
 - [ ] Provider and model statistics
-- [x] Document OpenAI-compatible services (OpenRouter, Ollama, LM Studio, Groq, DeepSeek, LiteLLM)
+- [ ] Native Anthropic provider (not planned)
+- [ ] Native Gemini provider (not planned)
 
 Configuration is built (`src/config.rs`): a TOML `kamui.toml` replaces `.env` and `dotenvy`. A
 global `kamui.toml` in the OS config directory may hold the API key; a per-project `kamui.toml` in
@@ -132,17 +137,23 @@ is project, then global, then built-in defaults, with no environment variables i
 configuration. First run scaffolds the global config directory with a commented template and exits
 so the user can fill in the key. `KAMUI_DATA_DIR` still overrides only the database location.
 
-Runtime model switching is built. The config accepts named `[profiles.<name>]` entries (each a
-model, base_url, api_key, and optional context_window); the flat single-provider form remains valid
-as one implicit profile. In chat, `/model` lists profiles and `/model <name>` switches the active
-provider and model, persisting the choice in the SQLite `settings` table so it survives restarts.
-The provider is rebuilt through a factory injected by `main`, so the chat loop stays provider-neutral.
+Runtime model switching is built. The config accepts named `[profiles.<name>]` entries; the flat
+single-provider form remains valid as one implicit profile. Several profiles can share one key by
+referencing a `[providers.<name>]` block. A per-profile `tools` flag (default true) turns tools off
+for models that reject the `tools` field — many small local models — so plain chat still works; those
+profiles are shown as `[no tools]`. In chat, `/model` lists profiles and `/model <name>` switches the
+active provider and model, persisting the choice in the SQLite `settings` table so it survives
+restarts. The provider is rebuilt through a factory injected by `main`, so the chat loop stays
+provider-neutral.
+
+Thinking spinner and interrupt-and-continue (Phase 6 items) also shipped early: a braille spinner
+animates until the first token, and `Ctrl+C` mid-turn returns to the prompt instead of exiting.
 
 ## Phase 6: Terminal Experience
 
 - [ ] Markdown rendering
 - [ ] Syntax highlighting
-- [ ] Thinking indicator
+- [x] Thinking indicator (braille spinner until the first token)
 - [ ] Rich terminal UI
 - [ ] Session pinning
 - [ ] Prompt templates

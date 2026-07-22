@@ -28,7 +28,9 @@ effort or operational risk is disproportionate to their immediate value.
   failed streams are not added to history.
 - The first completed exchange receives an AI-generated title. Title-generation usage is recorded
   with kind `title`, while the request count shown to users counts only primary chat requests.
-- Streaming deltas are printed immediately. Usage and finish reason are shown after completion.
+- Streaming deltas are printed immediately. Usage and finish reason are shown after completion. A
+  braille spinner animates from when each request is sent until the first token arrives, then erases
+  itself so the response starts on a clean line.
 - `Ctrl+C` shuts down gracefully. Windows stdin uses a reader thread and Tokio channel so the async
   runtime does not block on terminal input.
 - Supported chat commands are `/help`, `/new`, `/sessions`, `/resume <id>`, `/rename <id> <title>`,

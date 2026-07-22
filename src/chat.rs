@@ -5,8 +5,10 @@ use crate::tools::ToolRegistry;
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
 use std::io::{self, Write};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
+use tokio::task::JoinHandle;
 
 const RESUME_PREVIEW_MESSAGES: usize = 6;
 /// Upper bound on model/tool round-trips within a single user turn, to stop runaway tool loops.
@@ -144,15 +146,21 @@ pub async fn start_chat(
                 messages: turn_messages.clone(),
                 tools: tool_definitions.clone(),
             });
+            println!();
+            // Animate a spinner from the moment the request is sent until the first token (or a
+            // terminal event) arrives, so the wait for the model does not look frozen.
+            let mut spinner = Some(start_spinner("Thinking..."));
             let mut stream = tokio::select! {
                 response = request => match response {
                     Ok(stream) => stream,
                     Err(error) => {
+                        stop_spinner(&mut spinner).await;
                         eprintln!("\nRequest failed: {error:#}\n");
                         continue 'chat;
                     }
                 },
                 signal = tokio::signal::ctrl_c() => {
+                    stop_spinner(&mut spinner).await;
                     signal.context("failed to listen for Ctrl+C")?;
                     println!();
                     shutdown(database, session.as_ref(), context_window)?;
@@ -160,13 +168,13 @@ pub async fn start_chat(
                 }
             };
 
-            println!();
             let mut content = String::new();
             let mut ttft: Option<Duration> = None;
             let (usage, finish_reason, tool_calls) = loop {
                 let event = tokio::select! {
                     event = stream.recv() => event,
                     signal = tokio::signal::ctrl_c() => {
+                        stop_spinner(&mut spinner).await;
                         signal.context("failed to listen for Ctrl+C")?;
                         println!();
                         shutdown(database, session.as_ref(), context_window)?;
@@ -175,6 +183,7 @@ pub async fn start_chat(
                 };
                 match event {
                     Some(Ok(StreamEvent::Delta(delta))) => {
+                        stop_spinner(&mut spinner).await;
                         if ttft.is_none() {
                             ttft = Some(started.elapsed());
                         }
@@ -187,14 +196,17 @@ pub async fn start_chat(
                         finish_reason,
                         tool_calls,
                     })) => {
+                        stop_spinner(&mut spinner).await;
                         println!();
                         break (usage, finish_reason, tool_calls);
                     }
                     Some(Err(error)) => {
+                        stop_spinner(&mut spinner).await;
                         eprintln!("\n\nRequest failed: {error:#}\n");
                         continue 'chat;
                     }
                     None => {
+                        stop_spinner(&mut spinner).await;
                         eprintln!("\n\nRequest failed: provider stream closed unexpectedly\n");
                         continue 'chat;
                     }
@@ -326,6 +338,55 @@ pub async fn start_chat(
     }
 
     Ok(())
+}
+
+/// A background task that animates a single-line braille spinner until told to stop.
+struct Spinner {
+    stop: Arc<Notify>,
+    handle: JoinHandle<()>,
+    width: usize,
+}
+
+fn start_spinner(label: &'static str) -> Spinner {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let stop = Arc::new(Notify::new());
+    let stop_task = stop.clone();
+    let handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(80));
+        let mut frame = 0usize;
+        loop {
+            tokio::select! {
+                _ = stop_task.notified() => break,
+                _ = interval.tick() => {
+                    print!("\r{} {label}", FRAMES[frame % FRAMES.len()]);
+                    let _ = io::stdout().flush();
+                    frame += 1;
+                }
+            }
+        }
+    });
+    Spinner {
+        stop,
+        handle,
+        width: label.chars().count() + 2,
+    }
+}
+
+impl Spinner {
+    async fn finish(self) {
+        self.stop.notify_one();
+        let _ = self.handle.await;
+        // Erase the spinner line so the response starts on a clean line.
+        print!("\r{}\r", " ".repeat(self.width));
+        let _ = io::stdout().flush();
+    }
+}
+
+/// Stop the spinner if it is still running. Safe to call repeatedly.
+async fn stop_spinner(spinner: &mut Option<Spinner>) {
+    if let Some(spinner) = spinner.take() {
+        spinner.finish().await;
+    }
 }
 
 fn input_channel() -> mpsc::UnboundedReceiver<String> {

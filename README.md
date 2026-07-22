@@ -83,6 +83,28 @@ Resume a saved session directly when starting Kamui:
 kamui -r <session-id>
 ```
 
+### Session commands
+
+| Command | Description |
+| --- | --- |
+| `/new` | Start a new session |
+| `/sessions` | List saved sessions |
+| `/resume <id>` | Resume a session |
+| `/rename <id> <title>` | Rename a session |
+| `/search <text>` | Search saved messages across all sessions |
+| `/delete <id>` | Delete a session |
+| `/stats` | Show current session usage |
+| `/help` | List available commands |
+| `/exit` | Save and quit |
+
+`/rename` accepts a session ID prefix followed by the new title; if the renamed session is the
+active one, its in-memory title updates immediately. `/search` matches message text
+case-insensitively (literal `%` and `_` are not treated as wildcards) and prints each hit as its
+session ID, timestamp, title, and a snippet centered on the match.
+
+After each streamed response, Kamui reports time-to-first-token (`TTFT`) and total response time
+(`Time`) alongside token usage and the finish reason.
+
 ## Repository context
 
 Kamui uses the directory where it was launched as the project root. If that directory contains

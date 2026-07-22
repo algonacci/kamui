@@ -4,6 +4,7 @@ use crate::storage::{Database, Session};
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
 use std::io::{self, Write};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 const RESUME_PREVIEW_MESSAGES: usize = 6;
@@ -102,6 +103,7 @@ pub async fn start_chat(
         };
         request_messages.push(Message::user(expanded_input));
 
+        let started = Instant::now();
         let request = provider.chat_stream(ChatRequest {
             model: session
                 .as_ref()
@@ -127,6 +129,7 @@ pub async fn start_chat(
 
         println!();
         let mut content = String::new();
+        let mut ttft: Option<Duration> = None;
         let response = loop {
             let event = tokio::select! {
                 event = stream.recv() => event,
@@ -139,6 +142,9 @@ pub async fn start_chat(
             };
             match event {
                 Some(Ok(StreamEvent::Delta(delta))) => {
+                    if ttft.is_none() {
+                        ttft = Some(started.elapsed());
+                    }
                     print!("{delta}");
                     io::stdout().flush()?;
                     content.push_str(&delta);
@@ -169,6 +175,8 @@ pub async fn start_chat(
             response.usage.completion_tokens,
             response.usage.total_tokens,
             &response.finish_reason,
+            ttft,
+            started.elapsed(),
             context_window,
         );
 
@@ -320,6 +328,48 @@ fn handle_command(
                 println!("Started a new chat. It will be saved after the first response.\n");
             }
         }
+        "/rename" => {
+            let (id_prefix, new_title) =
+                argument.split_once(char::is_whitespace).unwrap_or(("", ""));
+            let new_title = new_title.trim();
+            if id_prefix.is_empty() || new_title.is_empty() {
+                anyhow::bail!("usage: /rename <id> <new title>");
+            }
+            let target = resolve_session(database, id_prefix.trim())?;
+            database.rename_session(&target.id, new_title)?;
+            if let Some(active) = session.as_mut()
+                && active.id == target.id
+            {
+                active.title = new_title.to_string();
+            }
+            println!("Renamed {} to: {new_title}\n", short_id(&target.id));
+        }
+        "/search" => {
+            if argument.is_empty() {
+                anyhow::bail!("usage: /search <text>");
+            }
+            let hits = database.search_messages(argument, 20)?;
+            if hits.is_empty() {
+                println!("No messages matched \"{argument}\".\n");
+            } else {
+                for hit in hits {
+                    let speaker = match hit.role.as_str() {
+                        "user" => "You",
+                        "assistant" => "Assistant",
+                        "system" => "System",
+                        _ => "?",
+                    };
+                    println!(
+                        "{}  {}  {:<30}  {speaker}: {}",
+                        short_id(&hit.session_id),
+                        format_timestamp(hit.created_at),
+                        truncate(&hit.title, 30),
+                        make_snippet(&hit.content, argument),
+                    );
+                }
+                println!();
+            }
+        }
         "/stats" => match session.as_ref() {
             Some(session) => print_stats(database, session, context_window)?,
             None => println!("This chat has no saved messages yet.\n"),
@@ -389,11 +439,14 @@ fn print_history_preview(messages: &[Message]) {
     println!("--- End of history ---\n");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_usage(
     input: u64,
     output: u64,
     total: u64,
     finish_reason: &str,
+    ttft: Option<Duration>,
+    elapsed: Duration,
     context_window: Option<u64>,
 ) {
     print!("Tokens: {input} input + {output} output = {total} total");
@@ -401,7 +454,20 @@ fn print_usage(
         let percent = input as f64 / window as f64 * 100.0;
         print!(" | Context: {percent:.1}%");
     }
+    if let Some(ttft) = ttft {
+        print!(" | TTFT: {}", format_duration(ttft));
+    }
+    print!(" | Time: {}", format_duration(elapsed));
     println!(" | Finish: {finish_reason}\n");
+}
+
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs_f64();
+    if seconds < 1.0 {
+        format!("{}ms", duration.as_millis())
+    } else {
+        format!("{seconds:.1}s")
+    }
 }
 
 fn make_title(input: &str) -> String {
@@ -428,6 +494,48 @@ fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
+fn truncate(text: &str, max: usize) -> String {
+    let mut result: String = text.chars().take(max).collect();
+    if text.chars().count() > max {
+        result.push('…');
+    }
+    result
+}
+
+/// Build a single-line preview of `content` centered on the first match of `query`.
+fn make_snippet(content: &str, query: &str) -> String {
+    const WINDOW: usize = 80;
+    const LEAD: usize = 24;
+
+    let normalized: Vec<char> = content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .collect();
+    // ASCII-fold both sides so indexing stays aligned one-to-one with `normalized`.
+    let haystack: Vec<char> = normalized.iter().map(|c| c.to_ascii_lowercase()).collect();
+    let needle: Vec<char> = query.chars().map(|c| c.to_ascii_lowercase()).collect();
+
+    let start = match haystack
+        .windows(needle.len().max(1))
+        .position(|window| window == needle.as_slice())
+    {
+        Some(position) => position.saturating_sub(LEAD),
+        None => 0,
+    };
+
+    let mut snippet = String::new();
+    if start > 0 {
+        snippet.push('…');
+    }
+    snippet.extend(normalized[start..].iter().take(WINDOW));
+    if normalized.len() - start > WINDOW {
+        snippet.push('…');
+    }
+    snippet
+}
+
 fn format_timestamp(timestamp: i64) -> String {
     Local
         .timestamp_opt(timestamp, 0)
@@ -446,6 +554,8 @@ fn print_help() {
     println!("/new              Start a new session");
     println!("/sessions         List saved sessions");
     println!("/resume <id>      Resume a session");
+    println!("/rename <id> <t>  Rename a session");
+    println!("/search <text>    Search saved messages");
     println!("/delete <id>      Delete a session");
     println!("/stats            Show current session usage");
     println!("/exit             Save and quit\n");

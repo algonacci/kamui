@@ -19,11 +19,12 @@ roadmap prioritizes a safe, useful read-only workflow before file mutation and c
 - [x] Project instructions (`KAMUI.md` or `AGENTS.md`)
 - [x] Read-only `@file` context
 - [x] Git diff context (`@diff` and `@staged`)
-- [ ] Custom global instructions
-- [ ] Session rename
-- [ ] Session export to Markdown
-- [ ] Conversation search
-- [ ] Latency and time-to-first-token tracking
+- [x] Session rename
+- [x] Conversation search
+- [x] Latency and time-to-first-token tracking
+
+Descoped from Phase 2 (not planned): custom global instructions and Markdown export. Do not
+re-add without a concrete user request.
 
 ## Phase 3: Coding Agent Runtime
 

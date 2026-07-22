@@ -28,6 +28,14 @@ pub struct SessionSummary {
     pub updated_at: i64,
 }
 
+pub struct SearchHit {
+    pub session_id: String,
+    pub title: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: i64,
+}
+
 #[derive(Default)]
 pub struct SessionStats {
     pub request_count: i64,
@@ -274,11 +282,51 @@ impl Database {
         Ok(stats)
     }
 
+    pub fn rename_session(&self, session_id: &str, title: &str) -> Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE sessions SET title = ?2, updated_at = unixepoch() WHERE id = ?1",
+            params![session_id, title],
+        )?;
+        if changed == 0 {
+            anyhow::bail!("session '{session_id}' was not found");
+        }
+        Ok(())
+    }
+
+    pub fn search_messages(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let pattern = format!("%{}%", escape_like(query));
+        let mut statement = self.connection.prepare(
+            "SELECT m.session_id, s.title, m.role, m.content, m.created_at
+             FROM messages m JOIN sessions s ON s.id = m.session_id
+             WHERE m.content LIKE ?1 ESCAPE '\\'
+             ORDER BY m.created_at DESC, m.id DESC
+             LIMIT ?2",
+        )?;
+        let hits = statement.query_map(params![pattern, limit as i64], |row| {
+            Ok(SearchHit {
+                session_id: row.get(0)?,
+                title: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        hits.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         self.connection
             .execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
         Ok(())
     }
+}
+
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn data_dir() -> Result<PathBuf> {
@@ -390,6 +438,57 @@ mod tests {
 
         assert_eq!(summaries[0].message_count, 2);
         assert_eq!(summaries[0].total_tokens, 6);
+    }
+
+    #[test]
+    fn renames_session_and_updates_summary() {
+        let database = database();
+        let session = database.create_session("test", "model").unwrap();
+        database
+            .save_exchange(
+                &session.id,
+                &Message::user("hello"),
+                &Message::assistant("hi"),
+                &Usage::default(),
+                "stop",
+            )
+            .unwrap();
+
+        database
+            .rename_session(&session.id, "Custom title")
+            .unwrap();
+
+        let resumed = database.find_session(&session.id).unwrap().unwrap();
+        assert_eq!(resumed.title, "Custom title");
+        assert_eq!(database.list_sessions().unwrap()[0].title, "Custom title");
+    }
+
+    #[test]
+    fn renaming_missing_session_is_an_error() {
+        let database = database();
+        assert!(database.rename_session("missing", "title").is_err());
+    }
+
+    #[test]
+    fn search_matches_message_content_and_ignores_wildcards() {
+        let database = database();
+        let session = database.create_session("test", "model").unwrap();
+        database
+            .save_exchange(
+                &session.id,
+                &Message::user("How does ownership work in Rust"),
+                &Message::assistant("Ownership tracks each value's owner."),
+                &Usage::default(),
+                "stop",
+            )
+            .unwrap();
+
+        let hits = database.search_messages("ownership", 20).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|hit| hit.session_id == session.id));
+
+        // A literal percent must not behave as a wildcard.
+        assert!(database.search_messages("%", 20).unwrap().is_empty());
     }
 
     #[test]

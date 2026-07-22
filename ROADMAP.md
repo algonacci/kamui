@@ -111,7 +111,7 @@ Raw `git diff` remains available for code review because a condensed diff can om
 ## Phase 4: Context Management
 
 - [ ] Directory context with ignore rules
-- [ ] Clipboard context
+- [x] Clipboard context (`@clipboard`)
 - [ ] Conversation summarization
 - [ ] Context compression
 - [ ] Project indexing

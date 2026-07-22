@@ -86,6 +86,8 @@ The process working directory is the project root.
   contents, is stored in session history.
 - `@diff` attaches raw unstaged tracked changes using `git diff`.
 - `@staged` attaches raw staged changes using `git diff --cached`.
+- `@clipboard` attaches the system clipboard's text (via `arboard`); it errors clearly when the
+  clipboard is unavailable (headless) or empty. It is environment-dependent, so it has no unit test.
 - Untracked files are not in `@diff`; users must attach them explicitly with `@path`.
 - Raw diff is deliberate. Do not silently replace it with a condensed representation because code
   review may require details omitted by summarization.

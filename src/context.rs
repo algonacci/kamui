@@ -62,6 +62,7 @@ impl ProjectContext {
             let (label, content) = match reference.as_str() {
                 "diff" => ("git diff".to_string(), self.read_git_diff(false)?),
                 "staged" => ("git diff --staged".to_string(), self.read_git_diff(true)?),
+                "clipboard" => ("clipboard".to_string(), read_clipboard()?),
                 _ => (
                     reference.clone(),
                     read_project_file(&self.root, &reference)?,
@@ -206,6 +207,20 @@ pub fn list_project_directory(root: &Path, reference: &str) -> Result<String> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(listing)
+}
+
+/// Read UTF-8 text from the operating system clipboard. Errors clearly when the clipboard is
+/// unavailable (e.g. a headless session) or holds no text, rather than attaching nothing.
+fn read_clipboard() -> Result<String> {
+    let mut clipboard =
+        arboard::Clipboard::new().context("could not access the system clipboard")?;
+    let text = clipboard
+        .get_text()
+        .context("the clipboard does not contain text")?;
+    if text.trim().is_empty() {
+        anyhow::bail!("the clipboard is empty");
+    }
+    Ok(text)
 }
 
 fn read_text_file(path: &Path) -> Result<String> {

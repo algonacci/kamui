@@ -205,6 +205,13 @@ Use `@diff` for unstaged tracked changes or `@staged` for changes in the Git ind
 Git context is read-only and can be combined with file references. Untracked files are not included
 in `@diff`; attach them explicitly with `@path`.
 
+Use `@clipboard` to attach the current text contents of your system clipboard — handy for pasting an
+error message, a stack trace, or a snippet from elsewhere:
+
+```text
+> Why does this happen? @clipboard
+```
+
 ## Tools
 
 Kamui offers the model four tools: `list_directory` (discover what is in a folder), `read_file`

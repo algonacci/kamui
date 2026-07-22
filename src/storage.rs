@@ -45,6 +45,15 @@ pub struct SessionStats {
     pub last_input_tokens: Option<i64>,
 }
 
+/// Per-model token usage within a session, so switching models can be compared.
+pub struct ModelStat {
+    pub model: String,
+    pub request_count: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+}
+
 impl Database {
     pub fn open() -> Result<Self> {
         let data_dir = data_dir()?;
@@ -127,6 +136,12 @@ impl Database {
                      value TEXT NOT NULL
                  );
                  PRAGMA user_version = 4;",
+            )?;
+        }
+        if version < 5 {
+            connection.execute_batch(
+                "ALTER TABLE usage_records ADD COLUMN model TEXT;
+                 PRAGMA user_version = 5;",
             )?;
         }
         Ok(Self { connection, path })
@@ -224,6 +239,7 @@ impl Database {
         session_id: &str,
         messages: &[Message],
         usage: &Usage,
+        model: &str,
         finish_reason: &str,
     ) -> Result<()> {
         let input_tokens =
@@ -256,14 +272,15 @@ impl Database {
         }
         transaction.execute(
             "INSERT INTO usage_records
-             (session_id, input_tokens, output_tokens, total_tokens, finish_reason, kind)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'chat')",
+             (session_id, input_tokens, output_tokens, total_tokens, finish_reason, kind, model)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'chat', ?6)",
             params![
                 session_id,
                 input_tokens,
                 output_tokens,
                 total_tokens,
-                finish_reason
+                finish_reason,
+                model
             ],
         )?;
         let title_source = messages
@@ -287,6 +304,7 @@ impl Database {
         session_id: &str,
         title: &str,
         usage: &Usage,
+        model: &str,
         finish_reason: &str,
     ) -> Result<()> {
         let input_tokens =
@@ -302,14 +320,15 @@ impl Database {
         )?;
         transaction.execute(
             "INSERT INTO usage_records
-             (session_id, input_tokens, output_tokens, total_tokens, finish_reason, kind)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'title')",
+             (session_id, input_tokens, output_tokens, total_tokens, finish_reason, kind, model)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'title', ?6)",
             params![
                 session_id,
                 input_tokens,
                 output_tokens,
                 total_tokens,
-                finish_reason
+                finish_reason,
+                model
             ],
         )?;
         transaction.commit()?;
@@ -374,6 +393,30 @@ impl Database {
             })
         })?;
         hits.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Chat token usage grouped by model for one session, most-used first.
+    pub fn model_stats(&self, session_id: &str) -> Result<Vec<ModelStat>> {
+        let mut statement = self.connection.prepare(
+            "SELECT COALESCE(model, '(unknown)'), COUNT(*),
+                    COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(total_tokens), 0)
+             FROM usage_records
+             WHERE session_id = ?1 AND kind = 'chat'
+             GROUP BY model
+             ORDER BY SUM(total_tokens) DESC",
+        )?;
+        let rows = statement.query_map([session_id], |row| {
+            Ok(ModelStat {
+                model: row.get(0)?,
+                request_count: row.get(1)?,
+                input_tokens: row.get(2)?,
+                output_tokens: row.get(3)?,
+                total_tokens: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
 
@@ -470,6 +513,7 @@ mod tests {
                     Message::assistant("It defines main."),
                 ],
                 &Usage::default(),
+                "model",
                 "stop",
             )
             .unwrap();
@@ -533,6 +577,7 @@ mod tests {
                 "s1",
                 &[Message::tool_result("c1", "body")],
                 &Usage::default(),
+                "model",
                 "stop",
             )
             .unwrap();
@@ -557,6 +602,7 @@ mod tests {
                     completion_tokens: 5,
                     total_tokens: 15,
                 },
+                "model",
                 "stop",
             )
             .unwrap();
@@ -581,6 +627,7 @@ mod tests {
                 &session.id,
                 &[Message::user("hello"), Message::assistant("hi")],
                 &Usage::default(),
+                "model",
                 "stop",
             )
             .unwrap();
@@ -604,6 +651,7 @@ mod tests {
                     completion_tokens: 2,
                     total_tokens: 6,
                 },
+                "model",
                 "stop",
             )
             .unwrap();
@@ -623,6 +671,7 @@ mod tests {
                 &session.id,
                 &[Message::user("hello"), Message::assistant("hi")],
                 &Usage::default(),
+                "model",
                 "stop",
             )
             .unwrap();
@@ -654,6 +703,7 @@ mod tests {
                     Message::assistant("Ownership tracks each value's owner."),
                 ],
                 &Usage::default(),
+                "model",
                 "stop",
             )
             .unwrap();

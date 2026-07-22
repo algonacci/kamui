@@ -339,6 +339,7 @@ where
             &active_session.id,
             &turn_record,
             &final_usage,
+            &active.model,
             &final_finish,
         )?;
         if active_session.title == "New chat" {
@@ -376,6 +377,7 @@ where
                             &session.id,
                             &title,
                             &response.usage,
+                            &active.model,
                             &response.finish_reason,
                         )?;
                         session.title = title;
@@ -596,6 +598,16 @@ fn print_stats(database: &Database, session: &Session, context_window: Option<u6
     if let (Some(last_input), Some(window)) = (stats.last_input_tokens, context_window) {
         let percent = last_input as f64 / window as f64 * 100.0;
         println!("Last context:  {last_input}/{window} ({percent:.1}%)");
+    }
+    let by_model = database.model_stats(&session.id)?;
+    if by_model.len() > 1 {
+        println!("\n--- Per model ---");
+        for m in &by_model {
+            println!(
+                "  {:<24} {:>3} req  {:>8} in  {:>8} out  {:>8} total",
+                m.model, m.request_count, m.input_tokens, m.output_tokens, m.total_tokens
+            );
+        }
     }
     println!();
     Ok(())

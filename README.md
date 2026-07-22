@@ -62,6 +62,28 @@ Only the global `kamui.toml` holds the key; switching providers is a one-file ed
 keep a per-project `kamui.toml` that sets just `model` and `provider.base_url` to pin a project to a
 particular provider (never the key).
 
+### Switching models and providers at runtime
+
+Instead of editing the file every time, define named profiles once and switch with `/model`:
+
+```toml
+default_profile = "jatevo"
+
+[profiles.jatevo]
+model = "gpt-5.6-sol"
+base_url = "https://api.jatevo.ai/v1"
+api_key = "sk-jvo-..."
+
+[profiles.ollama]
+model = "llama3.2"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+```
+
+In chat, `/model` lists the profiles and marks the active one, and `/model ollama` switches the
+active provider and model for the next messages. Your choice is remembered across restarts, and the
+banner always shows which model is active — handy for comparing the same prompt across providers.
+
 ## Install
 
 Windows PowerShell:
@@ -122,6 +144,7 @@ kamui -r <session-id>
 | `/new` | Start a new session |
 | `/sessions` | List saved sessions |
 | `/resume <id>` | Resume a session |
+| `/model [name]` | List provider profiles, or switch to one |
 | `/rename <id> <title>` | Rename a session |
 | `/search <text>` | Search saved messages across all sessions |
 | `/delete <id>` | Delete a session |

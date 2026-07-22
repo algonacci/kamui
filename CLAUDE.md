@@ -36,8 +36,12 @@ effort or operational risk is disproportionate to their immediate value.
   and not saved, and an interrupted command is killed via `kill_on_drop`. `Ctrl+C` at the idle
   prompt shuts down gracefully. Windows stdin uses a reader thread and Tokio channel so the async
   runtime does not block on terminal input.
-- Supported chat commands are `/help`, `/new`, `/sessions`, `/resume <id>`, `/rename <id> <title>`,
-  `/search <text>`, `/delete <id>`, `/stats`, and `/exit`. Plain `exit` also quits.
+- Supported chat commands are `/help`, `/new`, `/sessions`, `/resume <id>`, `/model [name]`,
+  `/rename <id> <title>`, `/search <text>`, `/delete <id>`, `/stats`, and `/exit`. Plain `exit` also
+  quits.
+- `/model` lists the configured provider profiles and marks the active one; `/model <name>` switches
+  the active provider and model, rebuilding the provider and persisting the choice in the SQLite
+  `settings` table so it survives restarts. The banner shows the active model and profile.
 - After each streamed response the usage line reports time-to-first-token and total response time.
   These latency figures are displayed only, not persisted.
 - Chat requests offer the model read-only `read_file` and `list_directory` tools plus a
@@ -87,7 +91,8 @@ The process working directory is the project root.
 Important modules:
 
 - `src/main.rs`: CLI argument parsing, configuration loading, dependency construction, and startup.
-- `src/config.rs`: `kamui.toml` discovery, global/project layering, and the first-run scaffold.
+- `src/config.rs`: `kamui.toml` discovery, global/project layering, named provider profiles, and the
+  first-run scaffold.
 - `src/chat.rs`: interactive loop, streaming display, session commands, title generation, the
   streaming tool agent loop, and graceful shutdown.
 - `src/context.rs`: project instruction discovery and safe `@file`, `@diff`, and `@staged`
@@ -151,13 +156,22 @@ removed. Precedence is:
 2. Global `kamui.toml` in the OS configuration directory (may hold the API key).
 3. Built-in defaults.
 
+Two forms are accepted. The flat form sets top-level `model`/`context_window` and a `[provider]`
+section. The multi-profile form defines named `[profiles.<name>]` entries (each with `model`,
+`base_url`, `api_key`, and optional `context_window`) plus a `default_profile`; profiles win when
+present, and `/model` switches between them at runtime with the active choice stored in the SQLite
+`settings` table. A single implicit profile named `default` backs the flat form.
+
 Fields:
 
 - `model`: required model identifier (no default).
 - `context_window`: optional integer used for context-percentage reporting.
-- `[provider].base_url`: OpenAI-compatible base URL, defaults to `https://api.openai.com/v1`.
-- `[provider].api_key`: required; allowed only in the global file. A project file that sets it is
-  rejected with an error, so a committed project config can never leak a key.
+- `[provider].base_url` / `[profiles.*].base_url`: OpenAI-compatible base URL, defaults to
+  `https://api.openai.com/v1`.
+- `[provider].api_key` / `[profiles.*].api_key`: required; allowed only in the global file. A
+  project file that sets it anywhere is rejected, so a committed project config can never leak a key.
+- `default_profile`: chooses the starting profile when several are defined; a project file may set
+  it to pin a project to a profile.
 
 On first run, when no global `kamui.toml` exists, Kamui scaffolds the global config directory with a
 commented template and exits, asking the user to fill in the key. `KAMUI_DATA_DIR` remains an

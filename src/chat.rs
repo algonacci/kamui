@@ -1,3 +1,4 @@
+use crate::config::{Config, Profile};
 use crate::context::ProjectContext;
 use crate::provider::{ChatRequest, Message, Provider, StreamEvent, Usage};
 use crate::storage::{Database, Session};
@@ -13,18 +14,35 @@ use tokio::task::JoinHandle;
 const RESUME_PREVIEW_MESSAGES: usize = 6;
 /// Upper bound on model/tool round-trips within a single user turn, to stop runaway tool loops.
 const MAX_TOOL_ROUNDS: usize = 8;
+/// Settings key for the persisted active provider profile.
+const ACTIVE_PROFILE_KEY: &str = "active_profile";
 
-pub async fn start_chat(
-    provider: &dyn Provider,
-    default_model: String,
-    context_window: Option<u64>,
+pub async fn start_chat<F>(
+    config: Config,
     database: &Database,
     project: &ProjectContext,
     resume_id: Option<String>,
-) -> Result<()> {
+    build_provider: F,
+) -> Result<()>
+where
+    F: Fn(&Profile) -> Box<dyn Provider>,
+{
+    // Pick the active profile: a persisted choice if it still exists, otherwise the default.
+    let active_name = database
+        .get_setting(ACTIVE_PROFILE_KEY)?
+        .filter(|name| config.find(name).is_some())
+        .unwrap_or_else(|| config.default_profile.clone());
+    let mut active = config
+        .find(&active_name)
+        .cloned()
+        .unwrap_or_else(|| config.default().clone());
+    let mut provider = build_provider(&active);
+    let mut context_window = active.context_window;
+
     print_banner();
     println!("Data: {}", database.path().display());
     println!("Project: {}", display_path(project.root()));
+    println!("Model: {} ({})", active.model, active.name);
     if let Some(name) = project.instruction_name() {
         println!("Instructions: {name}");
     }
@@ -83,9 +101,24 @@ pub async fn start_chat(
             continue;
         }
         if input.starts_with('/') {
+            let (command, argument) = input.split_once(' ').unwrap_or((input, ""));
+            if command == "/model" {
+                if let Err(error) = switch_profile(
+                    argument.trim(),
+                    &config,
+                    &mut active,
+                    &mut provider,
+                    &mut context_window,
+                    database,
+                    &build_provider,
+                ) {
+                    eprintln!("Command failed: {error:#}\n");
+                }
+                continue;
+            }
             if let Err(error) = handle_command(
                 input,
-                provider,
+                provider.as_ref(),
                 context_window,
                 database,
                 &mut session,
@@ -105,10 +138,7 @@ pub async fn start_chat(
             }
         };
 
-        let model = session
-            .as_ref()
-            .map(|session| session.model.clone())
-            .unwrap_or_else(|| default_model.clone());
+        let model = active.model.clone();
         let tool_definitions = tools.definitions();
 
         // Working conversation for this turn: prior history, project instructions, and the
@@ -298,7 +328,7 @@ pub async fn start_chat(
         let is_first_exchange = session.is_none();
         let active_session = match session.as_mut() {
             Some(session) => session,
-            None => session.insert(database.create_session(provider.name(), &default_model)?),
+            None => session.insert(database.create_session(provider.name(), &active.model)?),
         };
         database.save_turn(
             &active_session.id,
@@ -313,7 +343,7 @@ pub async fn start_chat(
 
         if is_first_exchange {
             let title_request = provider.chat(ChatRequest {
-                model: default_model.clone(),
+                model: active.model.clone(),
                 messages: vec![
                     Message::system(
                         "Create a concise title of at most 6 words for this conversation. Return only the title without quotes or punctuation.",
@@ -566,6 +596,50 @@ fn print_stats(database: &Database, session: &Session, context_window: Option<u6
     Ok(())
 }
 
+/// List profiles, or switch to a named one and persist the choice. Rebuilding the provider swaps the
+/// base URL and API key; the model and context window follow the profile.
+fn switch_profile<F>(
+    name: &str,
+    config: &Config,
+    active: &mut Profile,
+    provider: &mut Box<dyn Provider>,
+    context_window: &mut Option<u64>,
+    database: &Database,
+    build_provider: &F,
+) -> Result<()>
+where
+    F: Fn(&Profile) -> Box<dyn Provider>,
+{
+    if name.is_empty() {
+        println!("Profiles:");
+        for profile in &config.profiles {
+            let marker = if profile.name == active.name {
+                "*"
+            } else {
+                " "
+            };
+            println!(
+                "{marker} {:<16} {:<22} {}",
+                profile.name, profile.model, profile.base_url
+            );
+        }
+        println!();
+        return Ok(());
+    }
+
+    match config.find(name) {
+        Some(profile) => {
+            *active = profile.clone();
+            *provider = build_provider(profile);
+            *context_window = profile.context_window;
+            database.set_setting(ACTIVE_PROFILE_KEY, &profile.name)?;
+            println!("Now using {} ({}).\n", profile.model, profile.name);
+        }
+        None => println!("Unknown profile '{name}'. Type /model to list profiles.\n"),
+    }
+    Ok(())
+}
+
 fn shutdown(
     database: &Database,
     session: Option<&Session>,
@@ -750,6 +824,7 @@ fn print_help() {
     println!("/new              Start a new session");
     println!("/sessions         List saved sessions");
     println!("/resume <id>      Resume a session");
+    println!("/model [name]     List provider profiles, or switch to one");
     println!("/rename <id> <t>  Rename a session");
     println!("/search <text>    Search saved messages");
     println!("/delete <id>      Delete a session");

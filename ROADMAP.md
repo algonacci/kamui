@@ -120,7 +120,7 @@ Raw `git diff` remains available for code review because a condensed diff can om
 - [ ] Native Anthropic provider
 - [ ] Native Gemini provider
 - [ ] Provider and model discovery
-- [ ] Runtime model switching
+- [x] Runtime model switching
 - [ ] Temperature and model parameters
 - [ ] Provider and model statistics
 - [x] Document OpenAI-compatible services (OpenRouter, Ollama, LM Studio, Groq, DeepSeek, LiteLLM)
@@ -131,6 +131,12 @@ the working directory is non-secret only and is rejected if it sets `api_key`. R
 is project, then global, then built-in defaults, with no environment variables in provider or model
 configuration. First run scaffolds the global config directory with a commented template and exits
 so the user can fill in the key. `KAMUI_DATA_DIR` still overrides only the database location.
+
+Runtime model switching is built. The config accepts named `[profiles.<name>]` entries (each a
+model, base_url, api_key, and optional context_window); the flat single-provider form remains valid
+as one implicit profile. In chat, `/model` lists profiles and `/model <name>` switches the active
+provider and model, persisting the choice in the SQLite `settings` table so it survives restarts.
+The provider is rebuilt through a factory injected by `main`, so the chat loop stays provider-neutral.
 
 ## Phase 6: Terminal Experience
 

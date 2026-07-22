@@ -120,6 +120,15 @@ impl Database {
                  PRAGMA user_version = 3;",
             )?;
         }
+        if version < 4 {
+            connection.execute_batch(
+                "CREATE TABLE IF NOT EXISTS settings (
+                     key TEXT PRIMARY KEY,
+                     value TEXT NOT NULL
+                 );
+                 PRAGMA user_version = 4;",
+            )?;
+        }
         Ok(Self { connection, path })
     }
 
@@ -371,6 +380,25 @@ impl Database {
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         self.connection
             .execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
+        Ok(())
+    }
+
+    /// A durable key-value store for small UI state, such as the active provider profile.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        self.connection
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
         Ok(())
     }
 }
@@ -636,6 +664,24 @@ mod tests {
 
         // A literal percent must not behave as a wildcard.
         assert!(database.search_messages("%", 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn settings_round_trip_and_overwrite() {
+        let database = database();
+        assert_eq!(database.get_setting("active_profile").unwrap(), None);
+
+        database.set_setting("active_profile", "ollama").unwrap();
+        assert_eq!(
+            database.get_setting("active_profile").unwrap().as_deref(),
+            Some("ollama")
+        );
+
+        database.set_setting("active_profile", "openai").unwrap();
+        assert_eq!(
+            database.get_setting("active_profile").unwrap().as_deref(),
+            Some("openai")
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod tools;
 use anyhow::{Context, Result};
 use config::Config;
 use context::ProjectContext;
+use provider::Provider;
 use provider::openai::OpenAIProvider;
 use storage::Database;
 
@@ -35,18 +36,15 @@ async fn main() -> Result<()> {
             return Ok(());
         }
     };
-    let provider = OpenAIProvider::new(config.api_key, config.base_url);
     let database = Database::open()?;
     let project = ProjectContext::discover()?;
 
-    chat::start_chat(
-        &provider,
-        config.model,
-        config.context_window,
-        &database,
-        &project,
-        resume_id,
-    )
+    chat::start_chat(config, &database, &project, resume_id, |profile| {
+        Box::new(OpenAIProvider::new(
+            profile.api_key.clone(),
+            profile.base_url.clone(),
+        )) as Box<dyn Provider>
+    })
     .await?;
 
     Ok(())

@@ -24,7 +24,7 @@ pub async fn start_chat(
 ) -> Result<()> {
     print_banner();
     println!("Data: {}", database.path().display());
-    println!("Project: {}", project.root().display());
+    println!("Project: {}", display_path(project.root()));
     if let Some(name) = project.instruction_name() {
         println!("Instructions: {name}");
     }
@@ -653,6 +653,20 @@ fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
+/// Render a path for display, trimming the Windows verbatim prefix that `canonicalize` adds
+/// (`\\?\C:\...` and `\\?\UNC\server\share`). The canonical form stays in use internally for
+/// path-safety checks.
+fn display_path(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(plain) = text.strip_prefix(r"\\?\") {
+        plain.to_string()
+    } else {
+        text
+    }
+}
+
 fn truncate(text: &str, max: usize) -> String {
     let mut result: String = text.chars().take(max).collect();
     if text.chars().count() > max {
@@ -749,6 +763,23 @@ mod tests {
     fn short_id_takes_the_first_eight_characters() {
         assert_eq!(short_id("0123456789"), "01234567");
         assert_eq!(short_id("abc"), "abc");
+    }
+
+    #[test]
+    fn display_path_trims_windows_verbatim_prefixes() {
+        use std::path::Path;
+        assert_eq!(
+            display_path(Path::new(r"\\?\C:\Users\dev\project")),
+            r"C:\Users\dev\project"
+        );
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\dir")),
+            r"\\server\share\dir"
+        );
+        assert_eq!(
+            display_path(Path::new("/home/dev/project")),
+            "/home/dev/project"
+        );
     }
 
     #[test]

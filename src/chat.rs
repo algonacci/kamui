@@ -110,6 +110,7 @@ pub async fn start_chat(
                 .map(|session| session.model.clone())
                 .unwrap_or_else(|| default_model.clone()),
             messages: request_messages,
+            tools: Vec::new(),
         });
         let mut stream = tokio::select! {
             response = request => match response {
@@ -156,6 +157,7 @@ pub async fn start_chat(
                     println!("\n");
                     break ChatResponse {
                         content,
+                        tool_calls: Vec::new(),
                         usage,
                         finish_reason,
                     };
@@ -209,6 +211,7 @@ pub async fn start_chat(
                     messages[0].clone(),
                     messages[1].clone(),
                 ],
+                tools: Vec::new(),
             });
             let title_response = tokio::select! {
                 response = title_request => response,
@@ -559,4 +562,67 @@ fn print_help() {
     println!("/delete <id>      Delete a session");
     println!("/stats            Show current session usage");
     println!("/exit             Save and quit\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn make_title_truncates_long_input() {
+        assert_eq!(make_title("short"), "short");
+        let title = make_title(&"a".repeat(45));
+        assert_eq!(title.chars().count(), 43); // 40 characters plus "..."
+        assert!(title.ends_with("..."));
+    }
+
+    #[test]
+    fn clean_title_strips_wrapping_punctuation_and_extra_lines() {
+        assert_eq!(clean_title("\"Rust Ownership\""), "Rust Ownership");
+        assert_eq!(clean_title("Title:\nsecond line"), "Title");
+        assert_eq!(clean_title("  spaced.  "), "spaced");
+    }
+
+    #[test]
+    fn truncate_appends_ellipsis_only_when_needed() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate("hello world", 5), "hello…");
+    }
+
+    #[test]
+    fn short_id_takes_the_first_eight_characters() {
+        assert_eq!(short_id("0123456789"), "01234567");
+        assert_eq!(short_id("abc"), "abc");
+    }
+
+    #[test]
+    fn format_duration_switches_units_at_one_second() {
+        assert_eq!(format_duration(Duration::from_millis(320)), "320ms");
+        assert_eq!(format_duration(Duration::from_millis(999)), "999ms");
+        assert_eq!(format_duration(Duration::from_millis(4200)), "4.2s");
+        assert_eq!(format_duration(Duration::from_secs(1)), "1.0s");
+    }
+
+    #[test]
+    fn make_snippet_centers_on_the_match_without_ellipsis_when_short() {
+        let snippet = make_snippet("the quick brown fox jumps", "brown");
+        assert!(snippet.contains("brown"));
+        assert!(!snippet.contains('…'));
+    }
+
+    #[test]
+    fn make_snippet_is_case_insensitive_and_normalizes_whitespace() {
+        let snippet = make_snippet("Hello\n\n  WORLD   here", "world");
+        assert!(snippet.contains("WORLD"));
+        assert!(!snippet.contains('\n'));
+    }
+
+    #[test]
+    fn make_snippet_marks_truncation_with_an_ellipsis() {
+        let mut content = "x ".repeat(60); // pushes the match past the leading window
+        content.push_str("NEEDLE tail");
+        let snippet = make_snippet(&content, "needle");
+        assert!(snippet.starts_with('…'));
+        assert!(snippet.contains("NEEDLE"));
+    }
 }

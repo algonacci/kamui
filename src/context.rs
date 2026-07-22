@@ -221,4 +221,103 @@ mod tests {
         assert_eq!(context.expand_file_references("hello").unwrap(), "hello");
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn rejects_absolute_paths() {
+        let root = project();
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+        let prompt = format!("Read @{}", root.join("main.rs").display());
+
+        let error = context.expand_file_references(&prompt).unwrap_err();
+        assert!(error.to_string().contains("relative"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_directory_references() {
+        let root = project();
+        fs::create_dir(root.join("src")).unwrap();
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+
+        let error = context.expand_file_references("Read @src").unwrap_err();
+        assert!(error.to_string().contains("not a file"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_missing_files() {
+        let root = project();
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+
+        assert!(context.expand_file_references("Read @nope.rs").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_files_over_the_size_limit() {
+        let root = project();
+        fs::write(root.join("big.txt"), vec![b'a'; 65 * 1024]).unwrap();
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+
+        let error = context.expand_file_references("Read @big.txt").unwrap_err();
+        assert!(error.to_string().contains("64 KiB"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expands_unstaged_git_diff() {
+        let root = project();
+        fs::write(root.join("file.txt"), "hello\n").unwrap();
+        assert!(
+            Command::new("git")
+                .arg("init")
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["add", "file.txt"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        // Modify the tracked file so it differs from the index without a commit.
+        fs::write(root.join("file.txt"), "hello\nworld\n").unwrap();
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+
+        let prompt = context.expand_file_references("Review @diff").unwrap();
+
+        assert!(prompt.contains("<context source=\"git diff\">"));
+        assert!(prompt.contains("+world"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn falls_back_to_agents_when_kamui_absent() {
+        let root = project();
+        fs::write(root.join("AGENTS.md"), "Use Go.").unwrap();
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+
+        assert_eq!(context.instruction_name(), Some("AGENTS.md"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reports_no_instructions_when_none_present() {
+        let root = project();
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+
+        assert_eq!(context.instruction_name(), None);
+        assert!(context.system_message().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn file_references_strip_punctuation_and_deduplicate() {
+        let refs = file_references("see @a.rs, and @b.rs; also @a.rs and a bare @");
+        assert_eq!(refs, vec!["a.rs".to_string(), "b.rs".to_string()]);
+    }
 }

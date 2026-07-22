@@ -80,8 +80,15 @@ implementation. Do not leak OpenAI response structures into chat, storage, conte
 runtime APIs.
 
 The current `Provider` trait supports non-streaming `chat` and streaming `chat_stream`. The
-non-streaming path is currently used for title generation. A future tool-call protocol must be
-modeled in provider-independent types before adapting native OpenAI, Anthropic, or Gemini formats.
+non-streaming path is used for title generation and is the intended path for tool-calling turns.
+
+The provider-agnostic tool-call protocol is modeled in `provider/mod.rs` as `ToolDefinition`,
+`ToolCall`, and tool-request/tool-result `Message` variants; `ChatRequest` carries `tools` and
+`ChatResponse` surfaces `tool_calls`. The OpenAI adapter maps these to and from wire types entirely
+within `provider/openai.rs`, so the core no longer serializes its own types into an OpenAI-shaped
+payload. Native Anthropic and Gemini adapters must reuse these same neutral types. Still unbuilt: a
+tool runtime and dispatch layer, the agent loop, streaming tool-call assembly, and tool-message
+persistence (the `messages.role` CHECK constraint does not yet allow `'tool'`).
 
 ## Storage Decisions
 

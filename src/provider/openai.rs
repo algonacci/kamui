@@ -1,8 +1,11 @@
-use super::{ChatRequest, ChatResponse, Message, Provider, StreamEvent, Usage};
+use super::{
+    ChatRequest, ChatResponse, Message, Provider, StreamEvent, ToolCall, ToolDefinition, Usage,
+};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::mpsc;
 
 pub struct OpenAIProvider {
@@ -26,6 +29,117 @@ impl OpenAIProvider {
     }
 }
 
+// Request wire types. These belong to the provider; the core stays agnostic and never
+// serializes its own message types into an OpenAI-shaped payload.
+
+#[derive(Serialize)]
+struct OpenAIRequest<'a> {
+    model: &'a str,
+    messages: Vec<WireMessage<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<WireTool<'a>>,
+}
+
+#[derive(Serialize)]
+struct OpenAIStreamRequest<'a> {
+    model: &'a str,
+    messages: Vec<WireMessage<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<WireTool<'a>>,
+    stream: bool,
+    stream_options: StreamOptions,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
+}
+
+#[derive(Serialize)]
+struct WireMessage<'a> {
+    role: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<WireToolCall<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct WireToolCall<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: WireFunctionCall<'a>,
+}
+
+#[derive(Serialize)]
+struct WireFunctionCall<'a> {
+    name: &'a str,
+    arguments: &'a str,
+}
+
+#[derive(Serialize)]
+struct WireTool<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: WireToolFunction<'a>,
+}
+
+#[derive(Serialize)]
+struct WireToolFunction<'a> {
+    name: &'a str,
+    description: &'a str,
+    parameters: &'a Value,
+}
+
+fn wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> {
+    messages.iter().map(wire_message).collect()
+}
+
+fn wire_message(message: &Message) -> WireMessage<'_> {
+    // OpenAI expects a null content on an assistant turn that only requests tool calls.
+    let content = if message.content.is_empty() && !message.tool_calls.is_empty() {
+        None
+    } else {
+        Some(message.content.as_str())
+    };
+    WireMessage {
+        role: message.role_name(),
+        content,
+        tool_calls: message
+            .tool_calls
+            .iter()
+            .map(|call| WireToolCall {
+                id: &call.id,
+                kind: "function",
+                function: WireFunctionCall {
+                    name: &call.name,
+                    arguments: &call.arguments,
+                },
+            })
+            .collect(),
+        tool_call_id: message.tool_call_id.as_deref(),
+    }
+}
+
+fn wire_tools(tools: &[ToolDefinition]) -> Vec<WireTool<'_>> {
+    tools
+        .iter()
+        .map(|tool| WireTool {
+            kind: "function",
+            function: WireToolFunction {
+                name: &tool.name,
+                description: &tool.description,
+                parameters: &tool.parameters,
+            },
+        })
+        .collect()
+}
+
+// Response wire types.
+
 #[derive(Debug, Deserialize)]
 struct OpenAIResponse {
     choices: Vec<Choice>,
@@ -42,20 +156,45 @@ struct Choice {
 
 #[derive(Debug, Deserialize)]
 struct ResponseMessage {
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<ResponseToolCall>,
 }
 
-#[derive(Serialize)]
-struct OpenAIStreamRequest {
-    model: String,
-    messages: Vec<Message>,
-    stream: bool,
-    stream_options: StreamOptions,
+#[derive(Debug, Deserialize)]
+struct ResponseToolCall {
+    id: String,
+    function: ResponseFunctionCall,
 }
 
-#[derive(Serialize)]
-struct StreamOptions {
-    include_usage: bool,
+#[derive(Debug, Deserialize)]
+struct ResponseFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+fn response_into_chat(mut response: OpenAIResponse) -> Result<ChatResponse> {
+    let choice = response
+        .choices
+        .pop()
+        .context("provider returned no choices")?;
+    let tool_calls = choice
+        .message
+        .tool_calls
+        .into_iter()
+        .map(|call| ToolCall {
+            id: call.id,
+            name: call.function.name,
+            arguments: call.function.arguments,
+        })
+        .collect();
+    Ok(ChatResponse {
+        content: choice.message.content.unwrap_or_default(),
+        tool_calls,
+        usage: response.usage,
+        finish_reason: choice.finish_reason,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,11 +223,16 @@ impl Provider for OpenAIProvider {
     }
 
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        let body = OpenAIRequest {
+            model: &request.model,
+            messages: wire_messages(&request.messages),
+            tools: wire_tools(&request.tools),
+        };
         let response = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
-            .json(&request)
+            .json(&body)
             .send()
             .await
             .context("failed to call provider")?;
@@ -99,29 +243,21 @@ impl Provider for OpenAIProvider {
             bail!("provider returned {status}: {body}");
         }
 
-        let mut response: OpenAIResponse = response
+        let response: OpenAIResponse = response
             .json()
             .await
             .context("provider returned an invalid response")?;
-        let choice = response
-            .choices
-            .pop()
-            .context("provider returned no choices")?;
-
-        Ok(ChatResponse {
-            content: choice.message.content,
-            usage: response.usage,
-            finish_reason: choice.finish_reason,
-        })
+        response_into_chat(response)
     }
 
     async fn chat_stream(
         &self,
         request: ChatRequest,
     ) -> Result<mpsc::UnboundedReceiver<Result<StreamEvent>>> {
-        let request = OpenAIStreamRequest {
-            model: request.model,
-            messages: request.messages,
+        let body = OpenAIStreamRequest {
+            model: &request.model,
+            messages: wire_messages(&request.messages),
+            tools: wire_tools(&request.tools),
             stream: true,
             stream_options: StreamOptions {
                 include_usage: true,
@@ -131,7 +267,7 @@ impl Provider for OpenAIProvider {
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
-            .json(&request)
+            .json(&body)
             .send()
             .await
             .context("failed to call provider")?;
@@ -274,5 +410,129 @@ mod tests {
         }
         assert_eq!(usage.total_tokens, 5);
         assert_eq!(finish_reason, "stop");
+    }
+
+    #[test]
+    fn serializes_tools_and_tool_messages() {
+        let request = ChatRequest {
+            model: "m".to_string(),
+            messages: vec![
+                Message::user("read the file"),
+                Message::tool_request(
+                    String::new(),
+                    vec![ToolCall {
+                        id: "call_1".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path":"src/main.rs"}"#.to_string(),
+                    }],
+                ),
+                Message::tool_result("call_1", "fn main() {}"),
+            ],
+            tools: vec![ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read a project file".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } }
+                }),
+            }],
+        };
+        let body = OpenAIRequest {
+            model: &request.model,
+            messages: wire_messages(&request.messages),
+            tools: wire_tools(&request.tools),
+        };
+        let value = serde_json::to_value(&body).unwrap();
+
+        assert_eq!(value["tools"][0]["type"], "function");
+        assert_eq!(value["tools"][0]["function"]["name"], "read_file");
+        // The assistant tool-call turn carries no content but one function call.
+        assert!(value["messages"][1]["content"].is_null());
+        assert_eq!(value["messages"][1]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(
+            value["messages"][1]["tool_calls"][0]["function"]["name"],
+            "read_file"
+        );
+        // The tool result is tagged with the id of the call it answers.
+        assert_eq!(value["messages"][2]["role"], "tool");
+        assert_eq!(value["messages"][2]["tool_call_id"], "call_1");
+        assert_eq!(value["messages"][2]["content"], "fn main() {}");
+    }
+
+    #[test]
+    fn parses_plain_text_response() {
+        let json = r#"{
+            "choices": [{ "message": { "content": "Hi there" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4 }
+        }"#;
+        let response: OpenAIResponse = serde_json::from_str(json).unwrap();
+        let chat = response_into_chat(response).unwrap();
+
+        assert_eq!(chat.content, "Hi there");
+        assert!(chat.tool_calls.is_empty());
+        assert_eq!(chat.finish_reason, "stop");
+    }
+
+    #[test]
+    fn response_without_choices_is_an_error() {
+        let response: OpenAIResponse = serde_json::from_str(r#"{"choices":[]}"#).unwrap();
+        assert!(response_into_chat(response).is_err());
+    }
+
+    #[test]
+    fn omits_tools_and_serializes_plain_messages() {
+        let request = ChatRequest {
+            model: "m".to_string(),
+            messages: vec![Message::system("be brief"), Message::user("hi")],
+            tools: Vec::new(),
+        };
+        let body = OpenAIRequest {
+            model: &request.model,
+            messages: wire_messages(&request.messages),
+            tools: wire_tools(&request.tools),
+        };
+        let value = serde_json::to_value(&body).unwrap();
+
+        assert!(value.get("tools").is_none());
+        assert_eq!(value["messages"][0]["role"], "system");
+        assert_eq!(value["messages"][0]["content"], "be brief");
+        assert_eq!(value["messages"][1]["content"], "hi");
+    }
+
+    #[test]
+    fn invalid_stream_json_is_an_error() {
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        let mut usage = Usage::default();
+        let mut finish_reason = String::new();
+
+        assert!(parse_event(b"data: {not json}", &sender, &mut usage, &mut finish_reason).is_err());
+    }
+
+    #[test]
+    fn parses_tool_calls_from_response() {
+        let json = r#"{
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_9",
+                        "type": "function",
+                        "function": { "name": "read_file", "arguments": "{\"path\":\"a.rs\"}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": { "prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10 }
+        }"#;
+        let response: OpenAIResponse = serde_json::from_str(json).unwrap();
+        let chat = response_into_chat(response).unwrap();
+
+        assert_eq!(chat.finish_reason, "tool_calls");
+        assert_eq!(chat.content, "");
+        assert_eq!(chat.tool_calls.len(), 1);
+        assert_eq!(chat.tool_calls[0].id, "call_9");
+        assert_eq!(chat.tool_calls[0].name, "read_file");
+        assert_eq!(chat.tool_calls[0].arguments, r#"{"path":"a.rs"}"#);
+        assert_eq!(chat.usage.total_tokens, 10);
     }
 }

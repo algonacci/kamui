@@ -99,6 +99,28 @@ Referenced files are attached only to that request and are not copied into sessi
 file is limited to 64 KiB and all attached files together are limited to 128 KiB. Absolute paths,
 directories, binary files, and paths or symlinks outside the project are rejected.
 
+Use `@diff` for unstaged tracked changes or `@staged` for changes in the Git index:
+
+```text
+> Review @diff for bugs
+> Write a commit summary for @staged
+```
+
+Git context is read-only and can be combined with file references. Untracked files are not included
+in `@diff`; attach them explicitly with `@path`.
+
+## RTK integration direction
+
+[RTK](https://github.com/rtk-ai/rtk) will be an optional execution backend when Kamui gains terminal
+tools. Supported commands can run through RTK so compact test, build, search, Git, and container
+output reaches the model. Kamui will still own command permissions, timeouts, cancellation, output
+limits, and audit records.
+
+RTK is not currently used by chat or `@diff`, and users do not need to install it yet. Keeping raw
+diff context avoids dropping details needed for code review. The future integration will detect the
+external `rtk` binary and fall back to direct execution when it is unavailable or a command is not
+supported.
+
 ## Data storage
 
 The database uses the standard local application data directory for Windows, macOS, and Linux.

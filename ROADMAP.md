@@ -18,7 +18,7 @@ roadmap prioritizes a safe, useful read-only workflow before file mutation and c
 
 - [x] Project instructions (`KAMUI.md` or `AGENTS.md`)
 - [x] Read-only `@file` context
-- [ ] Git diff context
+- [x] Git diff context (`@diff` and `@staged`)
 - [ ] Custom global instructions
 - [ ] Session rename
 - [ ] Session export to Markdown
@@ -28,13 +28,20 @@ roadmap prioritizes a safe, useful read-only workflow before file mutation and c
 ## Phase 3: Coding Agent Runtime
 
 - [ ] Provider-agnostic tool-call protocol
+- [ ] Safe terminal command runner with permission, timeout, and output limits
+- [ ] Optional RTK execution backend with direct-command fallback
+- [ ] Preserve raw output on failures and command exit codes
 - [ ] Read file tool
 - [ ] Patch file tool with confirmation
 - [ ] Multi-file editing
-- [ ] Terminal command tool with permissions and timeout
 - [ ] Git status, diff, and commit integration
 - [ ] Tool audit trail
 - [ ] Cancellation and failed-tool recovery
+
+RTK is an execution optimization, not the command permission layer. When installed, Kamui should
+route supported terminal commands through the external `rtk` binary to reduce tool output before it
+enters model context. Unsupported commands and systems without RTK must continue to work directly.
+Raw `git diff` remains available for code review because a condensed diff can omit required detail.
 
 ## Phase 4: Context Management
 

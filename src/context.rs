@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const INSTRUCTION_FILES: [&str; 2] = ["KAMUI.md", "AGENTS.md"];
 const MAX_FILE_BYTES: u64 = 64 * 1024;
@@ -58,37 +59,64 @@ impl ProjectContext {
         let mut total_bytes = 0;
         let mut context = String::new();
         for reference in references {
-            let relative = Path::new(&reference);
-            if relative.is_absolute() {
-                anyhow::bail!("@file path must be relative to the project: {reference}");
-            }
+            let (label, content) = match reference.as_str() {
+                "diff" => ("git diff".to_string(), self.read_git_diff(false)?),
+                "staged" => ("git diff --staged".to_string(), self.read_git_diff(true)?),
+                _ => {
+                    let relative = Path::new(&reference);
+                    if relative.is_absolute() {
+                        anyhow::bail!("@file path must be relative to the project: {reference}");
+                    }
 
-            let path = self.root.join(relative).canonicalize().with_context(|| {
-                format!(
-                    "could not read @{reference} relative to {}",
-                    self.root.display()
-                )
-            })?;
-            if !path.starts_with(&self.root) {
-                anyhow::bail!("@file path is outside the project: {reference}");
-            }
-            if !path.is_file() {
-                anyhow::bail!("@file path is not a file: {reference}");
-            }
+                    let path = self.root.join(relative).canonicalize().with_context(|| {
+                        format!(
+                            "could not read @{reference} relative to {}",
+                            self.root.display()
+                        )
+                    })?;
+                    if !path.starts_with(&self.root) {
+                        anyhow::bail!("@file path is outside the project: {reference}");
+                    }
+                    if !path.is_file() {
+                        anyhow::bail!("@file path is not a file: {reference}");
+                    }
 
-            let content = read_text_file(&path)?;
+                    (relative.display().to_string(), read_text_file(&path)?)
+                }
+            };
+
             total_bytes += content.len();
             if total_bytes > MAX_CONTEXT_BYTES {
-                anyhow::bail!("@file context exceeds {} KiB", MAX_CONTEXT_BYTES / 1024);
+                anyhow::bail!("attached context exceeds {} KiB", MAX_CONTEXT_BYTES / 1024);
             }
             context.push_str(&format!(
-                "\n\n<file path=\"{}\">\n{}\n</file>",
-                relative.display(),
-                content
+                "\n\n<context source=\"{label}\">\n{content}\n</context>"
             ));
         }
 
-        Ok(format!("{input}\n\nAttached project files:{context}"))
+        Ok(format!("{input}\n\nAttached project context:{context}"))
+    }
+
+    fn read_git_diff(&self, staged: bool) -> Result<String> {
+        let mut command = Command::new("git");
+        command
+            .current_dir(&self.root)
+            .args(["diff", "--no-ext-diff", "--no-color"]);
+        if staged {
+            command.arg("--cached");
+        }
+
+        let output = command.output().context("failed to run git diff")?;
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            anyhow::bail!("git diff failed: {error}");
+        }
+        let diff = String::from_utf8(output.stdout).context("git diff output is not UTF-8")?;
+        Ok(if diff.is_empty() {
+            "(no changes)".to_string()
+        } else {
+            diff
+        })
     }
 }
 
@@ -151,8 +179,37 @@ mod tests {
             .expand_file_references("Explain @src/main.rs and @src/main.rs")
             .unwrap();
 
-        assert_eq!(prompt.matches("<file path=").count(), 1);
+        assert_eq!(prompt.matches("<context source=").count(), 1);
         assert!(prompt.contains("fn main() {}"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expands_staged_git_diff() {
+        let root = project();
+        fs::write(root.join("file.txt"), "hello\n").unwrap();
+        assert!(
+            Command::new("git")
+                .arg("init")
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["add", "file.txt"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+
+        let prompt = context.expand_file_references("Review @staged").unwrap();
+
+        assert!(prompt.contains("<context source=\"git diff --staged\">"));
+        assert!(prompt.contains("+hello"));
         fs::remove_dir_all(root).unwrap();
     }
 

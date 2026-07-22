@@ -34,6 +34,34 @@ Any service implementing the OpenAI Chat Completions API can be used by changing
 model, and API key. Chat responses use the API's SSE streaming mode and are rendered as deltas
 arrive.
 
+### OpenAI-compatible providers
+
+Kamui talks to any OpenAI-compatible endpoint, so you can point it at hosted aggregators or a local
+model without a dedicated integration. These are OpenAI-compatible services, not native providers;
+tool use and streaming depend on the server and model you pick.
+
+**OpenRouter** (many models behind one key):
+
+```toml
+model = "openai/gpt-4o-mini"   # any OpenRouter model id, namespaced as vendor/model
+[provider]
+base_url = "https://openrouter.ai/api/v1"
+api_key = "sk-or-v1-..."
+```
+
+**Ollama** (local models, no network key):
+
+```toml
+model = "llama3.2"                        # a model you have pulled with `ollama pull`
+[provider]
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"                        # Ollama ignores this, but a value is required
+```
+
+Only the global `kamui.toml` holds the key; switching providers is a one-file edit. You can also
+keep a per-project `kamui.toml` that sets just `model` and `provider.base_url` to pin a project to a
+particular provider (never the key).
+
 ## Install
 
 Windows PowerShell:

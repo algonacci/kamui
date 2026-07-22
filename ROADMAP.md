@@ -123,7 +123,7 @@ Raw `git diff` remains available for code review because a condensed diff can om
 - [ ] Runtime model switching
 - [ ] Temperature and model parameters
 - [ ] Provider and model statistics
-- [ ] Document OpenAI-compatible services (OpenRouter, Ollama, LM Studio, Groq, DeepSeek, LiteLLM)
+- [x] Document OpenAI-compatible services (OpenRouter, Ollama, LM Studio, Groq, DeepSeek, LiteLLM)
 
 Configuration is built (`src/config.rs`): a TOML `kamui.toml` replaces `.env` and `dotenvy`. A
 global `kamui.toml` in the OS config directory may hold the API key; a per-project `kamui.toml` in

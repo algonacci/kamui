@@ -167,9 +167,10 @@ Never commit API keys, credentials, provider responses containing secrets, or lo
 A project `kamui.toml` is safe to commit because it cannot contain a key. If a key appears in logs,
 chat, commits, or screenshots, advise immediate rotation.
 
-OpenRouter, Ollama, LM Studio, Groq, DeepSeek, and LiteLLM may work through an OpenAI-compatible base
-URL. Describe these as OpenAI-compatible services, not native provider integrations. Native
-Anthropic and Gemini support requires dedicated adapters.
+OpenRouter, Ollama, LM Studio, Groq, DeepSeek, and LiteLLM work through an OpenAI-compatible base
+URL by editing `provider.base_url` and `model` in `kamui.toml`; README documents OpenRouter and
+Ollama examples. Describe these as OpenAI-compatible services, not native provider integrations.
+Native Anthropic and Gemini support would require dedicated adapters and is not currently planned.
 
 ## RTK Decision
 

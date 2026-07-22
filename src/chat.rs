@@ -221,7 +221,7 @@ pub async fn start_chat(
                 started.elapsed(),
                 context_window,
             );
-            final_usage = usage;
+            accumulate_usage(&mut final_usage, &usage);
             final_finish = finish_reason;
             last_content = content.clone();
 
@@ -623,6 +623,15 @@ fn print_usage(
     println!(" | Finish: {finish_reason}\n");
 }
 
+/// Fold one agent-loop round's usage into the turn total: output tokens accumulate across every
+/// round, while the input count tracks the final round so it still reflects the context that was
+/// sent. Total is the last input plus all output generated during the turn.
+fn accumulate_usage(total: &mut Usage, round: &Usage) {
+    total.completion_tokens += round.completion_tokens;
+    total.prompt_tokens = round.prompt_tokens;
+    total.total_tokens = total.prompt_tokens + total.completion_tokens;
+}
+
 fn format_duration(duration: Duration) -> String {
     let seconds = duration.as_secs_f64();
     if seconds < 1.0 {
@@ -783,6 +792,31 @@ mod tests {
             display_path(Path::new("/home/dev/project")),
             "/home/dev/project"
         );
+    }
+
+    #[test]
+    fn accumulate_usage_sums_output_and_keeps_the_last_input() {
+        let mut total = Usage::default();
+        accumulate_usage(
+            &mut total,
+            &Usage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                total_tokens: 120,
+            },
+        );
+        accumulate_usage(
+            &mut total,
+            &Usage {
+                prompt_tokens: 150,
+                completion_tokens: 30,
+                total_tokens: 180,
+            },
+        );
+
+        assert_eq!(total.prompt_tokens, 150); // final round's context size
+        assert_eq!(total.completion_tokens, 50); // output summed across rounds
+        assert_eq!(total.total_tokens, 200); // last input + all output
     }
 
     #[test]

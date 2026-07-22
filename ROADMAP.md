@@ -44,8 +44,10 @@ re-add without a concrete user request.
 Milestone: the core coding-agent loop is complete. Kamui can explore (`list_directory`), read
 (`read_file`), execute (`run_command` with approval and optional RTK compression), and edit
 (`patch_file` with preview and approval), with whole turns persisted so resumed sessions replay
-tool interactions. Remaining Phase 3 work is hardening: multi-file ergonomics, Git integration,
-audit trail, cancellation and recovery, and per-turn usage accounting.
+tool interactions. A turn's recorded usage now folds every agent-loop round together: output tokens
+accumulate across rounds while the input count tracks the final round, so context reporting stays
+correct without double-counting. Remaining Phase 3 work is hardening: multi-file ergonomics, Git
+integration, an audit trail, and cancellation and recovery.
 
 Progress: the provider-agnostic tool-call types (`ToolDefinition`, `ToolCall`, tool-request and
 tool-result messages), their OpenAI serialization, and both non-streaming and streaming (index-keyed

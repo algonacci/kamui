@@ -112,12 +112,20 @@ Raw `git diff` remains available for code review because a condensed diff can om
 
 - [ ] Directory context with ignore rules
 - [x] Clipboard context (`@clipboard`)
-- [ ] Conversation summarization
-- [ ] Context compression
+- [x] Conversation summarization
+- [x] Context compression
 - [ ] Project indexing
 - [ ] Semantic search
 - [ ] Image input
-- [ ] PDF input
+- [ ] PDF input (not planned — handled via MCP)
+
+Context compaction is built (`src/compaction.rs`). When a session's un-summarized recent history
+grows past a byte threshold (about half the profile's `context_window`, or a default), the older
+messages are folded into a rolling summary via one non-streaming request, and the request thereafter
+sends the agentic prompt plus that summary plus the most recent messages verbatim. `/compact`
+triggers it manually. The full history stays in storage; only the per-request message list is
+compressed, and the summary is in-memory (regenerated after a resume). Excel/PDF input are handled
+through MCP; project indexing and semantic search remain deferred as large, separate efforts.
 
 ## Phase 5: Providers and Models
 

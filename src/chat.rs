@@ -1,3 +1,4 @@
+use crate::compaction;
 use crate::config::{Config, Profile};
 use crate::context::ProjectContext;
 use crate::prompt;
@@ -73,6 +74,11 @@ where
     };
     let mut input_rx = input_channel();
 
+    // Rolling context compaction: `summary` folds in messages before `summarized_upto`; the rest of
+    // `messages` is sent verbatim. Both reset whenever a command replaces the loaded history.
+    let mut summary: Option<String> = None;
+    let mut summarized_upto: usize = 0;
+
     'chat: loop {
         print!("> ");
         io::stdout().flush()?;
@@ -117,6 +123,29 @@ where
                 }
                 continue;
             }
+            if command == "/compact" {
+                let outcome = tokio::select! {
+                    result = run_compaction(
+                        provider.as_ref(), &active.model, &messages, summary.as_deref(), summarized_upto,
+                    ) => result,
+                    signal = tokio::signal::ctrl_c() => {
+                        signal.context("failed to listen for Ctrl+C")?;
+                        println!("\n(interrupted — back to prompt)\n");
+                        continue;
+                    }
+                };
+                match outcome {
+                    Ok(Some((new_summary, new_upto, count))) => {
+                        summary = Some(new_summary);
+                        summarized_upto = new_upto;
+                        println!("Compacted {count} earlier messages into the summary.\n");
+                    }
+                    Ok(None) => println!("Not enough history to compact yet.\n"),
+                    Err(error) => eprintln!("Compaction failed: {error:#}\n"),
+                }
+                continue;
+            }
+            let messages_before = messages.len();
             if let Err(error) = handle_command(
                 input,
                 provider.as_ref(),
@@ -126,6 +155,11 @@ where
                 &mut messages,
             ) {
                 eprintln!("Command failed: {error:#}\n");
+            }
+            // Compaction state is tied to the current history; reset it if a command replaced it.
+            if messages.len() != messages_before {
+                summary = None;
+                summarized_upto = 0;
             }
             continue;
         }
@@ -147,12 +181,42 @@ where
             Vec::new()
         };
 
-        // Working conversation for this turn: the agentic system prompt (plus project instructions),
-        // prior history, and the expanded prompt. Intermediate tool messages live here only; they
-        // are not persisted.
-        let mut turn_messages = messages.clone();
-        let system = prompt::build(active.tools, project.system_message().as_deref());
-        turn_messages.insert(0, Message::system(system));
+        // Auto-compact older history once the recent portion grows past the threshold.
+        summarized_upto = summarized_upto.min(messages.len());
+        if compaction::total_bytes(&messages[summarized_upto..])
+            > compaction::threshold(active.context_window)
+        {
+            let outcome = tokio::select! {
+                result = run_compaction(
+                    provider.as_ref(), &active.model, &messages, summary.as_deref(), summarized_upto,
+                ) => result,
+                signal = tokio::signal::ctrl_c() => {
+                    signal.context("failed to listen for Ctrl+C")?;
+                    println!("\n(interrupted — back to prompt)\n");
+                    continue 'chat;
+                }
+            };
+            match outcome {
+                Ok(Some((new_summary, new_upto, count))) => {
+                    summary = Some(new_summary);
+                    summarized_upto = new_upto;
+                    println!("(compacted {count} earlier messages into a running summary)\n");
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("(could not compact history: {error:#})\n"),
+            }
+        }
+
+        // Working conversation for this turn: the agentic system prompt (plus project instructions
+        // and any running summary), the un-summarized recent history, and the expanded prompt.
+        // Intermediate tool messages live here only; they are not persisted.
+        let mut system = prompt::build(active.tools, project.system_message().as_deref());
+        if let Some(summary) = &summary {
+            system.push_str("\n\nSummary of the earlier conversation so far:\n\n");
+            system.push_str(summary);
+        }
+        let mut turn_messages = vec![Message::system(system)];
+        turn_messages.extend(messages[summarized_upto..].iter().cloned());
         turn_messages.push(Message::user(expanded_input));
 
         // Agent loop: stream a turn, run any tools it requests, and repeat until a plain answer.
@@ -614,6 +678,29 @@ fn print_stats(database: &Database, session: &Session, context_window: Option<u6
     Ok(())
 }
 
+/// Fold the older, un-summarized messages into a fresh running summary via a non-streaming request.
+/// Returns the new summary, the new summarized-up-to index, and how many messages were folded in, or
+/// `None` when there is nothing new worth summarizing.
+async fn run_compaction(
+    provider: &dyn Provider,
+    model: &str,
+    messages: &[Message],
+    summary: Option<&str>,
+    summarized_upto: usize,
+) -> Result<Option<(String, usize, usize)>> {
+    let Some(cutoff) = compaction::cutoff(messages.len(), summarized_upto) else {
+        return Ok(None);
+    };
+    let rendered = compaction::render(&messages[summarized_upto..cutoff]);
+    let request = compaction::summary_request(model, summary, &rendered);
+    let response = provider.chat(request).await?;
+    Ok(Some((
+        response.content.trim().to_string(),
+        cutoff,
+        cutoff - summarized_upto,
+    )))
+}
+
 /// List profiles, or switch to a named one and persist the choice. Rebuilding the provider swaps the
 /// base URL and API key; the model and context window follow the profile.
 fn switch_profile<F>(
@@ -846,6 +933,7 @@ fn print_help() {
     println!("/model [name]     List provider profiles, or switch to one");
     println!("/rename <id> <t>  Rename a session");
     println!("/search <text>    Search saved messages");
+    println!("/compact          Summarize older messages to free up context");
     println!("/delete <id>      Delete a session");
     println!("/stats            Show current session usage");
     println!("/exit             Save and quit\n");

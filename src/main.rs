@@ -1,4 +1,5 @@
 mod chat;
+mod compaction;
 mod config;
 mod context;
 mod prompt;

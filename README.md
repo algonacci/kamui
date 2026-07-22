@@ -166,6 +166,7 @@ kamui -r <session-id>
 | `/model [name]` | List provider profiles, or switch to one |
 | `/rename <id> <title>` | Rename a session |
 | `/search <text>` | Search saved messages across all sessions |
+| `/compact` | Summarize older messages to free up context |
 | `/delete <id>` | Delete a session |
 | `/stats` | Show current session usage |
 | `/help` | List available commands |
@@ -178,6 +179,11 @@ session ID, timestamp, title, and a snippet centered on the match.
 
 After each streamed response, Kamui reports time-to-first-token (`TTFT`) and total response time
 (`Time`) alongside token usage and the finish reason.
+
+Long conversations are compacted automatically: once the recent history grows large, Kamui folds the
+older messages into a running summary so the session can continue without overflowing the model's
+context. Run `/compact` to do it on demand. The full history is always kept in storage — only what
+is sent to the model each turn is compressed.
 
 ## Repository context
 

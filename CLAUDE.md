@@ -39,8 +39,12 @@ effort or operational risk is disproportionate to their immediate value.
   prompt shuts down gracefully. Windows stdin uses a reader thread and Tokio channel so the async
   runtime does not block on terminal input.
 - Supported chat commands are `/help`, `/new`, `/sessions`, `/resume <id>`, `/model [name]`,
-  `/rename <id> <title>`, `/search <text>`, `/delete <id>`, `/stats`, and `/exit`. Plain `exit` also
-  quits.
+  `/rename <id> <title>`, `/search <text>`, `/compact`, `/delete <id>`, `/stats`, and `/exit`. Plain
+  `exit` also quits.
+- Long sessions are compacted automatically: when the un-summarized recent history exceeds a byte
+  threshold (about half the profile's `context_window`, or a default), older messages are folded
+  into a rolling summary and the request sends the summary plus recent messages. `/compact` forces
+  it. Full history stays in storage; the summary is in-memory and regenerated after a resume.
 - `/model` lists the configured provider profiles and marks the active one; `/model <name>` switches
   the active provider and model, rebuilding the provider and persisting the choice in the SQLite
   `settings` table so it survives restarts. The banner shows the active model and profile.
@@ -100,6 +104,8 @@ Important modules:
 - `src/config.rs`: `kamui.toml` discovery, global/project layering, named provider profiles, and the
   first-run scaffold.
 - `src/prompt.rs`: the agentic system prompt, combined with project instructions per request.
+- `src/compaction.rs`: rolling-summary context compaction (threshold, message selection, summary
+  request); the chat loop drives it automatically and via `/compact`.
 - `src/chat.rs`: interactive loop, streaming display, session commands, title generation, the
   streaming tool agent loop, and graceful shutdown.
 - `src/context.rs`: project instruction discovery and safe `@file`, `@diff`, and `@staged`

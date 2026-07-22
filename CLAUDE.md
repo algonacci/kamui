@@ -31,7 +31,10 @@ effort or operational risk is disproportionate to their immediate value.
 - Streaming deltas are printed immediately. Usage and finish reason are shown after completion. A
   braille spinner animates from when each request is sent until the first token arrives, then erases
   itself so the response starts on a clean line.
-- `Ctrl+C` shuts down gracefully. Windows stdin uses a reader thread and Tokio channel so the async
+- `Ctrl+C` while a turn is in flight (waiting for the model, streaming, at an approval prompt, or
+  running a command) interrupts that turn and returns to the prompt; the partial turn is discarded
+  and not saved, and an interrupted command is killed via `kill_on_drop`. `Ctrl+C` at the idle
+  prompt shuts down gracefully. Windows stdin uses a reader thread and Tokio channel so the async
   runtime does not block on terminal input.
 - Supported chat commands are `/help`, `/new`, `/sessions`, `/resume <id>`, `/rename <id> <title>`,
   `/search <text>`, `/delete <id>`, `/stats`, and `/exit`. Plain `exit` also quits.
@@ -205,14 +208,16 @@ The source of truth is `ROADMAP.md`. Current priority order is:
 
 1. Phase 2 is complete. Custom global instructions and Markdown export were descoped; do not start
    them without a concrete user request.
-2. The Phase 3 core loop is complete: the provider-agnostic tool-call protocol, streaming agent
-   loop, read/list tools, the confirmation-gated command runner with optional RTK routing, the
-   confirmation-gated `patch_file` editor, and whole-turn persistence including tool messages.
-3. Finish the remaining Phase 3 items before new capability areas: multi-file editing ergonomics,
-   Git integration, a durable tool audit trail, cancellation and failed-tool recovery, and accurate
-   per-turn usage accounting.
-4. Then move to Phase 4 context management and Phase 5 providers and configuration (`kamui.toml`),
-   in whichever order a concrete need dictates.
+2. Phase 3 is complete: the provider-agnostic tool-call protocol, streaming agent loop, read/list
+   tools, the confirmation-gated command runner with optional RTK routing, the confirmation-gated
+   `patch_file` editor, whole-turn persistence including tool messages, per-turn usage accounting,
+   and interrupt-and-continue cancellation. Multi-file editing is repeated `patch_file` calls within
+   a turn; Git works through `run_command` plus `@diff`/`@staged`; the audit trail is the persisted
+   tool messages.
+3. Next is Phase 4 context management (the largest quality gap for long sessions) and Phase 5
+   providers and configuration (`kamui.toml`), in whichever order a concrete need dictates. An
+   agentic system prompt that teaches the model how to use the tools well is a cheap, high-impact
+   early candidate.
 
 Avoid starting these early because their true scope is large:
 

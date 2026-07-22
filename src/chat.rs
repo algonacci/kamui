@@ -162,9 +162,8 @@ pub async fn start_chat(
                 signal = tokio::signal::ctrl_c() => {
                     stop_spinner(&mut spinner).await;
                     signal.context("failed to listen for Ctrl+C")?;
-                    println!();
-                    shutdown(database, session.as_ref(), context_window)?;
-                    return Ok(());
+                    println!("\n(interrupted — back to prompt)\n");
+                    continue 'chat;
                 }
             };
 
@@ -176,9 +175,8 @@ pub async fn start_chat(
                     signal = tokio::signal::ctrl_c() => {
                         stop_spinner(&mut spinner).await;
                         signal.context("failed to listen for Ctrl+C")?;
-                        println!();
-                        shutdown(database, session.as_ref(), context_window)?;
-                        return Ok(());
+                        println!("\n(interrupted — back to prompt)\n");
+                        continue 'chat;
                     }
                 };
                 match event {
@@ -249,9 +247,8 @@ pub async fn start_chat(
                         answer = input_rx.recv() => answer,
                         signal = tokio::signal::ctrl_c() => {
                             signal.context("failed to listen for Ctrl+C")?;
-                            println!();
-                            shutdown(database, session.as_ref(), context_window)?;
-                            return Ok(());
+                            println!("\n(interrupted — back to prompt)\n");
+                            continue 'chat;
                         }
                     };
                     let approved = matches!(
@@ -259,13 +256,27 @@ pub async fn start_chat(
                         Some("y" | "Y" | "yes" | "Yes")
                     );
                     if approved {
-                        tools.dispatch(call).await
+                        tokio::select! {
+                            output = tools.dispatch(call) => output,
+                            signal = tokio::signal::ctrl_c() => {
+                                signal.context("failed to listen for Ctrl+C")?;
+                                println!("\n    (interrupted — back to prompt)\n");
+                                continue 'chat;
+                            }
+                        }
                     } else {
                         println!("    skipped");
                         "The user declined to run this command.".to_string()
                     }
                 } else {
-                    tools.dispatch(call).await
+                    tokio::select! {
+                        output = tools.dispatch(call) => output,
+                        signal = tokio::signal::ctrl_c() => {
+                            signal.context("failed to listen for Ctrl+C")?;
+                            println!("\n    (interrupted — back to prompt)\n");
+                            continue 'chat;
+                        }
+                    }
                 };
                 match output.strip_prefix("Error: ") {
                     Some(error) => println!("    ! {error}"),

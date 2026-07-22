@@ -36,18 +36,32 @@ re-add without a concrete user request.
 - [x] Preserve raw output on failures and command exit codes
 - [x] Optional RTK execution backend with direct-command fallback
 - [x] Patch file tool with confirmation
-- [ ] Multi-file editing
-- [ ] Git status, diff, and commit integration
-- [ ] Tool audit trail
-- [ ] Cancellation and failed-tool recovery
+- [x] Multi-file editing
+- [x] Git status, diff, and commit integration
+- [x] Tool audit trail
+- [x] Cancellation and failed-tool recovery
 
-Milestone: the core coding-agent loop is complete. Kamui can explore (`list_directory`), read
-(`read_file`), execute (`run_command` with approval and optional RTK compression), and edit
-(`patch_file` with preview and approval), with whole turns persisted so resumed sessions replay
-tool interactions. A turn's recorded usage now folds every agent-loop round together: output tokens
-accumulate across rounds while the input count tracks the final round, so context reporting stays
-correct without double-counting. Remaining Phase 3 work is hardening: multi-file ergonomics, Git
-integration, an audit trail, and cancellation and recovery.
+Phase 3 is complete. Kamui can explore (`list_directory`), read (`read_file`), execute
+(`run_command` with approval and optional RTK compression), and edit (`patch_file` with preview and
+approval), with whole turns persisted so resumed sessions replay tool interactions. A turn's
+recorded usage folds every agent-loop round together: output tokens accumulate across rounds while
+the input count tracks the final round, so context reporting stays correct without double-counting.
+
+How the last four items are satisfied:
+
+- Multi-file editing: the agent loop runs any number of `patch_file` calls within a single turn,
+  each independently previewed and approved, so a change spanning several files is one conversation
+  turn. A single atomic multi-file transaction is deliberately not built; each file is its own
+  reviewable, atomic write.
+- Git status, diff, and commit integration: Git is available through `run_command` (with approval
+  and RTK compression) for status, diff, and commit, and read-only history context is available
+  through `@diff` and `@staged`. No Git-specific tool is needed on top of these.
+- Tool audit trail: every tool request and result is persisted as part of the turn (see the tool
+  message persistence above) and replayed on resume, which is the durable record of what ran.
+- Cancellation and failed-tool recovery: `Ctrl+C` during a turn interrupts it and returns to the
+  prompt, killing any running command, without saving the partial turn; at the idle prompt it exits.
+  Tool failures (bad arguments, a patch that does not match, a declined command, an unknown tool)
+  are returned to the model as text so it can recover on the next round rather than aborting.
 
 Progress: the provider-agnostic tool-call types (`ToolDefinition`, `ToolCall`, tool-request and
 tool-result messages), their OpenAI serialization, and both non-streaming and streaming (index-keyed

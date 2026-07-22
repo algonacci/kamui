@@ -72,8 +72,10 @@ effort or operational risk is disproportionate to their immediate value.
 
 The process working directory is the project root.
 
-- At startup, Kamui loads `KAMUI.md` if present, otherwise `AGENTS.md`. The selected content becomes
-  a system message on every request.
+- Every request begins with an agentic system prompt (`src/prompt.rs`) that tells the model how to
+  work as a terminal coding agent; its tool-usage guidance is included only when the active profile
+  offers tools. At startup, Kamui loads `KAMUI.md` if present, otherwise `AGENTS.md`, and appends
+  that content to the system prompt.
 - `CLAUDE.md` is an agent development guide and is intentionally not loaded by Kamui at runtime.
 - A prompt can attach UTF-8 text with a relative reference such as `@src/main.rs`.
 - Each file is limited to 64 KiB and all attached context is limited to 128 KiB per request.
@@ -95,6 +97,7 @@ Important modules:
 - `src/main.rs`: CLI argument parsing, configuration loading, dependency construction, and startup.
 - `src/config.rs`: `kamui.toml` discovery, global/project layering, named provider profiles, and the
   first-run scaffold.
+- `src/prompt.rs`: the agentic system prompt, combined with project instructions per request.
 - `src/chat.rs`: interactive loop, streaming display, session commands, title generation, the
   streaming tool agent loop, and graceful shutdown.
 - `src/context.rs`: project instruction discovery and safe `@file`, `@diff`, and `@staged`
@@ -244,10 +247,13 @@ The source of truth is `ROADMAP.md`. Current priority order is:
    and interrupt-and-continue cancellation. Multi-file editing is repeated `patch_file` calls within
    a turn; Git works through `run_command` plus `@diff`/`@staged`; the audit trail is the persisted
    tool messages.
-3. Next is Phase 4 context management (the largest quality gap for long sessions) and Phase 5
-   providers and configuration (`kamui.toml`), in whichever order a concrete need dictates. An
-   agentic system prompt that teaches the model how to use the tools well is a cheap, high-impact
-   early candidate.
+3. Phase 5 is complete for its planned scope (config, runtime `/model` switching with profiles and
+   shared credentials, OpenAI-compatible docs, per-model stats). An agentic system prompt
+   (`src/prompt.rs`) now ships on every request.
+4. Remaining focus is Phase 4 context management (the largest quality gap for long sessions).
+   Conversation summarization and compression are deliberately deferred to last; image input is the
+   next planned Phase 4 item. Excel/PDF input are handled via MCP, and Anthropic/Gemini native
+   providers, project indexing, and semantic search are not planned.
 
 Avoid starting these early because their true scope is large:
 

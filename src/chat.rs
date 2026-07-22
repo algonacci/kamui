@@ -1,5 +1,6 @@
 use crate::config::{Config, Profile};
 use crate::context::ProjectContext;
+use crate::prompt;
 use crate::provider::{ChatRequest, Message, Provider, StreamEvent, Usage};
 use crate::storage::{Database, Session};
 use crate::tools::ToolRegistry;
@@ -146,12 +147,12 @@ where
             Vec::new()
         };
 
-        // Working conversation for this turn: prior history, project instructions, and the
-        // expanded prompt. Intermediate tool messages live here only; they are not persisted.
+        // Working conversation for this turn: the agentic system prompt (plus project instructions),
+        // prior history, and the expanded prompt. Intermediate tool messages live here only; they
+        // are not persisted.
         let mut turn_messages = messages.clone();
-        if let Some(instructions) = project.system_message() {
-            turn_messages.insert(0, Message::system(instructions));
-        }
+        let system = prompt::build(active.tools, project.system_message().as_deref());
+        turn_messages.insert(0, Message::system(system));
         turn_messages.push(Message::user(expanded_input));
 
         // Agent loop: stream a turn, run any tools it requests, and repeat until a plain answer.

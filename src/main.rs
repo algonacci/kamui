@@ -1,6 +1,7 @@
 mod chat;
 mod config;
 mod context;
+mod prompt;
 mod provider;
 mod storage;
 mod tools;

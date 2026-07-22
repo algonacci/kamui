@@ -203,18 +203,19 @@ command may report its availability and version, and installers may offer it as 
 
 The source of truth is `ROADMAP.md`. Current priority order is:
 
-1. Phase 2 is complete. Session rename, conversation search, and latency/time-to-first-token
-   tracking shipped. Custom global instructions and Markdown export were descoped; do not start them
-   without a concrete user request.
-2. Design Phase 3 provider-agnostic tool calls before implementing mutation or shell execution.
-3. Build a safe terminal runner, then add optional RTK routing and direct fallback.
-4. Add editing only with confirmation, containment, audit, and failure recovery.
-5. Add broader context management and native providers after the runtime foundation is stable.
+1. Phase 2 is complete. Custom global instructions and Markdown export were descoped; do not start
+   them without a concrete user request.
+2. The Phase 3 core loop is complete: the provider-agnostic tool-call protocol, streaming agent
+   loop, read/list tools, the confirmation-gated command runner with optional RTK routing, the
+   confirmation-gated `patch_file` editor, and whole-turn persistence including tool messages.
+3. Finish the remaining Phase 3 items before new capability areas: multi-file editing ergonomics,
+   Git integration, a durable tool audit trail, cancellation and failed-tool recovery, and accurate
+   per-turn usage accounting.
+4. Then move to Phase 4 context management and Phase 5 providers and configuration (`kamui.toml`),
+   in whichever order a concrete need dictates.
 
 Avoid starting these early because their true scope is large:
 
-- Write/patch/multi-file editing without an explicit tool runtime.
-- Arbitrary terminal execution without permissions and timeout.
 - Project indexing and semantic search.
 - Context compression.
 - MCP, plugin systems, remote workers, background jobs, or multi-agent execution.

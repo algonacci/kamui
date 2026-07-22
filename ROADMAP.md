@@ -41,6 +41,12 @@ re-add without a concrete user request.
 - [ ] Tool audit trail
 - [ ] Cancellation and failed-tool recovery
 
+Milestone: the core coding-agent loop is complete. Kamui can explore (`list_directory`), read
+(`read_file`), execute (`run_command` with approval and optional RTK compression), and edit
+(`patch_file` with preview and approval), with whole turns persisted so resumed sessions replay
+tool interactions. Remaining Phase 3 work is hardening: multi-file ergonomics, Git integration,
+audit trail, cancellation and recovery, and per-turn usage accounting.
+
 Progress: the provider-agnostic tool-call types (`ToolDefinition`, `ToolCall`, tool-request and
 tool-result messages), their OpenAI serialization, and both non-streaming and streaming (index-keyed
 delta reassembly) parsing have landed with tests. The core no longer serializes its own message

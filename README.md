@@ -133,18 +133,24 @@ in `@diff`; attach them explicitly with `@path`.
 
 ## Tools
 
-Kamui offers the model two read-only tools: `list_directory`, to discover what is in a folder, and
-`read_file`, to read a file. When you ask about code, the model can explore and read on its own
-instead of requiring you to attach files with `@path`:
+Kamui offers the model three tools: `list_directory` (discover what is in a folder), `read_file`
+(read a file), and `run_command` (run a shell command). When you ask about code, the model can
+explore, read, build, and test on its own instead of requiring you to attach files with `@path`:
 
 ```text
 > What does the agent loop in src/chat.rs do?
+> Run the tests and tell me if anything fails.
 ```
 
 If the model calls a tool, Kamui prints a short trace of each call, runs it, feeds the result back,
-and continues streaming until a final answer. Tool calls reuse the same path safety as `@file`
+and continues streaming until a final answer. The read tools reuse the same path safety as `@file`
 (project-relative only, no escaping the root, 64 KiB per file) and the loop is bounded so it cannot
-run away. The tools are read-only; file editing and command execution are not implemented yet.
+run away.
+
+`run_command` never runs on its own. Kamui shows you the exact command and waits for you to approve
+it (`y`/`yes`); anything else declines and tells the model so. Commands run in the project directory
+with input disabled, a 30-second timeout, and a capped amount of captured output, and the model sees
+the exit code alongside stdout and stderr. File editing is not implemented yet.
 
 The whole turn is saved to session history, including the tool calls and their results, so a resumed
 session replays the tool interactions the model relied on.

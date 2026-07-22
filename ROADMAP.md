@@ -32,9 +32,9 @@ re-add without a concrete user request.
 - [x] Tool runtime, dispatch, and streaming agent loop
 - [x] Read file tool
 - [x] List directory tool
-- [ ] Safe terminal command runner with permission, timeout, and output limits
+- [x] Safe terminal command runner with permission, timeout, and output limits
+- [x] Preserve raw output on failures and command exit codes
 - [ ] Optional RTK execution backend with direct-command fallback
-- [ ] Preserve raw output on failures and command exit codes
 - [ ] Patch file tool with confirmation
 - [ ] Multi-file editing
 - [ ] Git status, diff, and commit integration
@@ -49,6 +49,13 @@ calls, read-only `read_file` and `list_directory` tools reuse the shared `@file`
 and the chat loop runs a streaming agent loop (bounded by a per-turn round limit) that executes
 requested tools and feeds results back until the model returns a plain answer. Tool failures are
 returned to the model as text so it can recover.
+
+The `run_command` tool executes shell commands in the project directory. Kamui owns the permission
+policy: any tool that reports `requires_confirmation` (only `run_command` so far) is shown to the
+user and must be approved with `y`/`yes` before it runs; declining feeds a refusal back to the
+model. Commands run with stdin disabled, a 30-second timeout that kills the process, and a 16 KiB
+output cap; the result carries the exit code plus captured stdout and stderr. RTK routing and a
+direct-fallback policy are not built yet, so commands always run directly.
 
 Tool messages are now persisted. A `user_version = 3` migration rebuilds the `messages` table to
 allow the `'tool'` role and store `tool_calls` and `tool_call_id`, and a whole turn (prompt, tool

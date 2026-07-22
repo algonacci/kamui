@@ -1,15 +1,27 @@
 use crate::context::{list_project_directory, read_project_file};
 use crate::provider::{ToolCall, ToolDefinition};
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
+use std::process::{Output, Stdio};
+use std::time::Duration;
 
-/// A capability the model can invoke by name. Implementations must be side-effect-safe for the
-/// current Phase 3 scope: read-only, contained to the project, and never destructive.
+/// Hard limits for the command runner. A command is terminated past the timeout, and its captured
+/// output is truncated so a chatty command cannot flood the model's context.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_COMMAND_OUTPUT: usize = 16 * 1024;
+
+/// A capability the model can invoke by name. Read-only tools run without prompting; anything with
+/// side effects returns `true` from `requires_confirmation` so the chat loop asks the user first.
+#[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn definition(&self) -> ToolDefinition;
-    fn run(&self, arguments: &str) -> Result<String>;
+    fn requires_confirmation(&self) -> bool {
+        false
+    }
+    async fn run(&self, arguments: &str) -> Result<String>;
 }
 
 /// The set of tools offered to the model, and the dispatcher that runs a requested call.
@@ -24,7 +36,10 @@ impl ToolRegistry {
                 Box::new(ReadFileTool {
                     root: project_root.clone(),
                 }),
-                Box::new(ListDirectoryTool { root: project_root }),
+                Box::new(ListDirectoryTool {
+                    root: project_root.clone(),
+                }),
+                Box::new(RunCommandTool { root: project_root }),
             ],
         }
     }
@@ -33,11 +48,21 @@ impl ToolRegistry {
         self.tools.iter().map(|tool| tool.definition()).collect()
     }
 
+    /// Whether a named tool must be confirmed by the user before it runs. Unknown names are treated
+    /// as not requiring confirmation; dispatch will report them as an error anyway.
+    pub fn requires_confirmation(&self, name: &str) -> bool {
+        self.tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .map(|tool| tool.requires_confirmation())
+            .unwrap_or(false)
+    }
+
     /// Run a requested call. Failures are returned as an `Error: ...` string rather than propagated
     /// so the model can read the problem and recover on the next turn.
-    pub fn dispatch(&self, call: &ToolCall) -> String {
+    pub async fn dispatch(&self, call: &ToolCall) -> String {
         match self.tools.iter().find(|tool| tool.name() == call.name) {
-            Some(tool) => match tool.run(&call.arguments) {
+            Some(tool) => match tool.run(&call.arguments).await {
                 Ok(output) => output,
                 Err(error) => format!("Error: {error:#}"),
             },
@@ -51,6 +76,7 @@ struct ReadFileTool {
     root: PathBuf,
 }
 
+#[async_trait]
 impl Tool for ReadFileTool {
     fn name(&self) -> &'static str {
         "read_file"
@@ -76,7 +102,7 @@ impl Tool for ReadFileTool {
         }
     }
 
-    fn run(&self, arguments: &str) -> Result<String> {
+    async fn run(&self, arguments: &str) -> Result<String> {
         let value: serde_json::Value =
             serde_json::from_str(arguments).context("tool arguments were not valid JSON")?;
         let path = value
@@ -92,6 +118,7 @@ struct ListDirectoryTool {
     root: PathBuf,
 }
 
+#[async_trait]
 impl Tool for ListDirectoryTool {
     fn name(&self) -> &'static str {
         "list_directory"
@@ -117,7 +144,7 @@ impl Tool for ListDirectoryTool {
         }
     }
 
-    fn run(&self, arguments: &str) -> Result<String> {
+    async fn run(&self, arguments: &str) -> Result<String> {
         let value: serde_json::Value =
             serde_json::from_str(arguments).context("tool arguments were not valid JSON")?;
         let path = value
@@ -126,6 +153,112 @@ impl Tool for ListDirectoryTool {
             .context("list_directory requires a 'path' string argument")?;
         list_project_directory(&self.root, path)
     }
+}
+
+/// Runs a shell command in the project directory. This tool has side effects, so it requires user
+/// confirmation (enforced by the chat loop) and is bounded by a timeout and an output cap.
+struct RunCommandTool {
+    root: PathBuf,
+}
+
+#[async_trait]
+impl Tool for RunCommandTool {
+    fn name(&self) -> &'static str {
+        "run_command"
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description:
+                "Run a shell command in the project directory and return its exit code and \
+                          output. The user must approve each command before it runs. Use it for \
+                          builds, tests, and searches."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to run, e.g. cargo test."
+                    }
+                },
+                "required": ["command"]
+            }),
+        }
+    }
+
+    async fn run(&self, arguments: &str) -> Result<String> {
+        let value: serde_json::Value =
+            serde_json::from_str(arguments).context("tool arguments were not valid JSON")?;
+        let command = value
+            .get("command")
+            .and_then(|command| command.as_str())
+            .context("run_command requires a 'command' string argument")?;
+
+        let (shell, flag) = if cfg!(windows) {
+            ("cmd", "/C")
+        } else {
+            ("sh", "-c")
+        };
+        let child = tokio::process::Command::new(shell)
+            .arg(flag)
+            .arg(command)
+            .current_dir(&self.root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .context("failed to start the command")?;
+
+        match tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output()).await {
+            Ok(result) => Ok(format_command_output(
+                &result.context("failed to run the command")?,
+            )),
+            Err(_) => Ok(format!(
+                "Error: command timed out after {} seconds and was terminated",
+                COMMAND_TIMEOUT.as_secs()
+            )),
+        }
+    }
+}
+
+fn format_command_output(output: &Output) -> String {
+    let code = output
+        .status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown (terminated by signal)".to_string());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let mut body = format!("exit code: {code}");
+    if !stdout.trim().is_empty() {
+        body.push_str("\nstdout:\n");
+        body.push_str(stdout.trim_end());
+    }
+    if !stderr.trim().is_empty() {
+        body.push_str("\nstderr:\n");
+        body.push_str(stderr.trim_end());
+    }
+    cap(&body, MAX_COMMAND_OUTPUT)
+}
+
+/// Truncate to at most `max` bytes on a char boundary, noting when output was cut.
+fn cap(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n… (output truncated)", &text[..end])
 }
 
 #[cfg(test)]
@@ -140,8 +273,8 @@ mod tests {
         path.canonicalize().unwrap()
     }
 
-    #[test]
-    fn read_file_returns_file_contents() {
+    #[tokio::test]
+    async fn read_file_returns_file_contents() {
         let root = project_root();
         fs::write(root.join("note.txt"), "hello tools").unwrap();
         let registry = ToolRegistry::with_defaults(root.clone());
@@ -151,12 +284,12 @@ mod tests {
             arguments: r#"{"path":"note.txt"}"#.to_string(),
         };
 
-        assert_eq!(registry.dispatch(&call), "hello tools");
+        assert_eq!(registry.dispatch(&call).await, "hello tools");
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn read_file_rejects_paths_outside_the_project() {
+    #[tokio::test]
+    async fn read_file_rejects_paths_outside_the_project() {
         let root = project_root();
         let registry = ToolRegistry::with_defaults(root.clone());
         let call = ToolCall {
@@ -165,12 +298,12 @@ mod tests {
             arguments: r#"{"path":"../secret.txt"}"#.to_string(),
         };
 
-        assert!(registry.dispatch(&call).starts_with("Error:"));
+        assert!(registry.dispatch(&call).await.starts_with("Error:"));
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn read_file_rejects_invalid_json_arguments() {
+    #[tokio::test]
+    async fn read_file_rejects_invalid_json_arguments() {
         let registry = ToolRegistry::with_defaults(std::env::temp_dir());
         let call = ToolCall {
             id: "c1".to_string(),
@@ -178,11 +311,11 @@ mod tests {
             arguments: "not json".to_string(),
         };
 
-        assert!(registry.dispatch(&call).starts_with("Error:"));
+        assert!(registry.dispatch(&call).await.starts_with("Error:"));
     }
 
-    #[test]
-    fn dispatch_reports_unknown_tools() {
+    #[tokio::test]
+    async fn dispatch_reports_unknown_tools() {
         let registry = ToolRegistry::with_defaults(std::env::temp_dir());
         let call = ToolCall {
             id: "c1".to_string(),
@@ -190,11 +323,11 @@ mod tests {
             arguments: "{}".to_string(),
         };
 
-        assert!(registry.dispatch(&call).contains("unknown tool"));
+        assert!(registry.dispatch(&call).await.contains("unknown tool"));
     }
 
-    #[test]
-    fn list_directory_shows_directories_before_files() {
+    #[tokio::test]
+    async fn list_directory_shows_directories_before_files() {
         let root = project_root();
         fs::create_dir(root.join("src")).unwrap();
         fs::write(root.join("README.md"), "x").unwrap();
@@ -205,15 +338,15 @@ mod tests {
             arguments: r#"{"path":"."}"#.to_string(),
         };
 
-        let output = registry.dispatch(&call);
+        let output = registry.dispatch(&call).await;
         assert!(output.contains("src/"));
         assert!(output.contains("README.md"));
         assert!(output.find("src/").unwrap() < output.find("README.md").unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn list_directory_rejects_a_file_path() {
+    #[tokio::test]
+    async fn list_directory_rejects_a_file_path() {
         let root = project_root();
         fs::write(root.join("note.txt"), "x").unwrap();
         let registry = ToolRegistry::with_defaults(root.clone());
@@ -223,7 +356,30 @@ mod tests {
             arguments: r#"{"path":"note.txt"}"#.to_string(),
         };
 
-        assert!(registry.dispatch(&call).starts_with("Error:"));
+        assert!(registry.dispatch(&call).await.starts_with("Error:"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_the_command_tool_requires_confirmation() {
+        let registry = ToolRegistry::with_defaults(std::env::temp_dir());
+        assert!(registry.requires_confirmation("run_command"));
+        assert!(!registry.requires_confirmation("read_file"));
+        assert!(!registry.requires_confirmation("list_directory"));
+        assert!(!registry.requires_confirmation("unknown"));
+    }
+
+    #[tokio::test]
+    async fn run_command_reports_output_and_exit_code() {
+        let registry = ToolRegistry::with_defaults(std::env::temp_dir());
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "run_command".to_string(),
+            arguments: r#"{"command":"echo kamui-ok"}"#.to_string(),
+        };
+
+        let output = registry.dispatch(&call).await;
+        assert!(output.contains("exit code: 0"));
+        assert!(output.contains("kamui-ok"));
     }
 }

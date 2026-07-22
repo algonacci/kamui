@@ -50,14 +50,14 @@ pub async fn start_chat(
             (None, Vec::new())
         }
     };
-    let mut input = input_channel();
+    let mut input_rx = input_channel();
 
     'chat: loop {
         print!("> ");
         io::stdout().flush()?;
 
         let input = tokio::select! {
-            input = input.recv() => match input {
+            input = input_rx.recv() => match input {
                 Some(input) => input,
                 None => {
                     shutdown(database, session.as_ref(), context_window)?;
@@ -225,9 +225,33 @@ pub async fn start_chat(
                 println!(
                     "  \u{2192} {}({})",
                     call.name,
-                    truncate(call.arguments.trim(), 80)
+                    truncate(call.arguments.trim(), 120)
                 );
-                let output = tools.dispatch(call);
+                let output = if tools.requires_confirmation(&call.name) {
+                    print!("    approve? [y/N] ");
+                    io::stdout().flush()?;
+                    let answer = tokio::select! {
+                        answer = input_rx.recv() => answer,
+                        signal = tokio::signal::ctrl_c() => {
+                            signal.context("failed to listen for Ctrl+C")?;
+                            println!();
+                            shutdown(database, session.as_ref(), context_window)?;
+                            return Ok(());
+                        }
+                    };
+                    let approved = matches!(
+                        answer.as_deref().map(str::trim),
+                        Some("y" | "Y" | "yes" | "Yes")
+                    );
+                    if approved {
+                        tools.dispatch(call).await
+                    } else {
+                        println!("    skipped");
+                        "The user declined to run this command.".to_string()
+                    }
+                } else {
+                    tools.dispatch(call).await
+                };
                 match output.strip_prefix("Error: ") {
                     Some(error) => println!("    ! {error}"),
                     None => println!("    ok ({} chars)", output.chars().count()),

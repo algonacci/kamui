@@ -38,10 +38,12 @@ pub async fn connect_all(servers: &[McpServer]) -> Vec<Box<dyn Tool>> {
 async fn connect(server: &McpServer) -> Result<Vec<Box<dyn Tool>>> {
     let mut command = tokio::process::Command::new(&server.command);
     command.args(&server.args);
-    // Server logs would otherwise interleave with the chat UI.
-    command.stderr(Stdio::null());
 
-    let transport = TokioChildProcess::new(command)
+    // The transport defaults to inheriting stderr, which would interleave the server's own logging
+    // with the chat UI, so it is silenced explicitly through the builder.
+    let (transport, _stderr) = TokioChildProcess::builder(command)
+        .stderr(Stdio::null())
+        .spawn()
         .with_context(|| format!("failed to start '{}'", server.command))?;
     let service = ().serve(transport).await.context("MCP initialization failed")?;
     let listed = service

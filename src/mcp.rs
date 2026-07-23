@@ -14,25 +14,43 @@ use serde_json::Value;
 use std::process::Stdio;
 use std::sync::Arc;
 
+pub struct ConnectionStatus {
+    pub name: String,
+    pub tool_count: usize,
+    pub trusted: bool,
+    pub error: Option<String>,
+}
+
+pub struct Connections {
+    pub tools: Vec<Box<dyn Tool>>,
+    pub statuses: Vec<ConnectionStatus>,
+}
+
 /// Connect to every configured server, returning all tools they advertise. A server that fails to
 /// start is reported and skipped rather than preventing Kamui from running.
-pub async fn connect_all(servers: &[McpServer]) -> Vec<Box<dyn Tool>> {
+pub async fn connect_all(servers: &[McpServer]) -> Connections {
     let mut tools: Vec<Box<dyn Tool>> = Vec::new();
+    let mut statuses = Vec::new();
     for server in servers {
         match connect(server).await {
             Ok(mut connected) => {
-                println!(
-                    "MCP: {} connected ({} tools){}",
-                    server.name,
-                    connected.len(),
-                    if server.trusted { ", trusted" } else { "" }
-                );
+                statuses.push(ConnectionStatus {
+                    name: server.name.clone(),
+                    tool_count: connected.len(),
+                    trusted: server.trusted,
+                    error: None,
+                });
                 tools.append(&mut connected);
             }
-            Err(error) => eprintln!("MCP: {} unavailable: {error:#}", server.name),
+            Err(error) => statuses.push(ConnectionStatus {
+                name: server.name.clone(),
+                tool_count: 0,
+                trusted: server.trusted,
+                error: Some(format!("{error:#}")),
+            }),
         }
     }
-    tools
+    Connections { tools, statuses }
 }
 
 async fn connect(server: &McpServer) -> Result<Vec<Box<dyn Tool>>> {

@@ -43,15 +43,23 @@ async fn main() -> Result<()> {
     let project = ProjectContext::discover()?;
 
     // Connect MCP servers before the chat starts so their tools are offered from the first turn.
-    let mcp_tools = mcp::connect_all(&config.mcp_servers).await;
-    let tools = tools::ToolRegistry::with_defaults(project.root().to_path_buf(), mcp_tools);
+    let mcp = mcp::connect_all(&config.mcp_servers).await;
+    let tools = tools::ToolRegistry::with_defaults(project.root().to_path_buf(), mcp.tools);
 
-    chat::start_chat(config, tools, &database, &project, resume_id, |profile| {
-        Box::new(OpenAIProvider::new(
-            profile.api_key.clone(),
-            profile.base_url.clone(),
-        )) as Box<dyn Provider>
-    })
+    chat::start_chat(
+        config,
+        tools,
+        mcp.statuses,
+        &database,
+        &project,
+        resume_id,
+        |profile| {
+            Box::new(OpenAIProvider::new(
+                profile.api_key.clone(),
+                profile.base_url.clone(),
+            )) as Box<dyn Provider>
+        },
+    )
     .await?;
 
     Ok(())

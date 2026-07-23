@@ -64,6 +64,10 @@ impl ToolRegistry {
         self.tools.iter().map(|tool| tool.definition()).collect()
     }
 
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
     /// Whether a named tool must be confirmed by the user before it runs. Unknown names are treated
     /// as not requiring confirmation; dispatch will report them as an error anyway.
     pub fn requires_confirmation(&self, name: &str) -> bool {

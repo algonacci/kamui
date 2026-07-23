@@ -1,6 +1,7 @@
 use crate::compaction;
 use crate::config::{Config, Profile};
 use crate::context::ProjectContext;
+use crate::mcp::ConnectionStatus;
 use crate::prompt;
 use crate::provider::{ChatRequest, Message, Provider, StreamEvent, Usage};
 use crate::storage::{Database, Session};
@@ -10,6 +11,7 @@ use chrono::{Local, TimeZone};
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{path::Path, process::Command};
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 
@@ -23,6 +25,7 @@ const ACTIVE_PROFILE_KEY: &str = "active_profile";
 pub async fn start_chat<F>(
     config: Config,
     tools: ToolRegistry,
+    mcp_statuses: Vec<ConnectionStatus>,
     database: &Database,
     project: &ProjectContext,
     resume_id: Option<String>,
@@ -43,13 +46,8 @@ where
     let mut provider = build_provider(&active);
     let mut context_window = active.context_window;
 
-    print_banner();
+    print_status(project, &active, &tools, &mcp_statuses);
     println!("Data: {}", database.path().display());
-    println!("Project: {}", display_path(project.root()));
-    println!("Model: {} ({})", active.model, active.name);
-    if let Some(name) = project.instruction_name() {
-        println!("Instructions: {name}");
-    }
     println!("Type /help for commands or exit to quit.\n");
 
     let (mut session, mut messages) = match resume_id {
@@ -121,6 +119,10 @@ where
                 ) {
                     eprintln!("Command failed: {error:#}\n");
                 }
+                continue;
+            }
+            if command == "/status" {
+                print_status(project, &active, &tools, &mcp_statuses);
                 continue;
             }
             if command == "/compact" {
@@ -920,12 +922,6 @@ fn format_timestamp(timestamp: i64) -> String {
         .unwrap_or_else(|| "unknown time".to_string())
 }
 
-fn print_banner() {
-    println!("╭──────────────────────────────╮");
-    println!("│         Kamui v0.1.0         │");
-    println!("╰──────────────────────────────╯\n");
-}
-
 fn print_help() {
     println!("/new              Start a new session");
     println!("/sessions         List saved sessions");
@@ -936,12 +932,138 @@ fn print_help() {
     println!("/compact          Summarize older messages to free up context");
     println!("/delete <id>      Delete a session");
     println!("/stats            Show current session usage");
+    println!("/status           Show project and connection status");
     println!("/exit             Save and quit\n");
+}
+
+struct GitStatus {
+    branch: String,
+    changed: usize,
+}
+
+fn print_status(
+    project: &ProjectContext,
+    active: &Profile,
+    tools: &ToolRegistry,
+    mcp_statuses: &[ConnectionStatus],
+) {
+    let git = git_status(project.root());
+    let project_name = project
+        .root()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project");
+
+    println!(
+        "╭─ Kamui v{} ─────────────────────────",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!(
+        "│ Project  {project_name}  ({})",
+        display_path(project.root())
+    );
+    match git {
+        Some(git) => println!("│ Git      {}  ·  {} changed", git.branch, git.changed),
+        None => println!("│ Git      not a repository"),
+    }
+    println!("│ Model    {}  ({})", active.model, active.name);
+    println!("│ Tools    {} available", tools.len());
+    if mcp_statuses.is_empty() {
+        println!("│ MCP      none configured");
+    } else {
+        for server in mcp_statuses {
+            match &server.error {
+                Some(_) => println!("│ MCP      {}  unavailable", server.name),
+                None => println!(
+                    "│ MCP      {}  connected · {} tools{}",
+                    server.name,
+                    server.tool_count,
+                    if server.trusted { " · trusted" } else { "" }
+                ),
+            }
+        }
+    }
+    if let Some(name) = project.instruction_name() {
+        println!("│ Rules    {name}");
+    }
+    println!("╰──────────────────────────────────────\n");
+}
+
+fn git_status(root: &Path) -> Option<GitStatus> {
+    let branch = Command::new("git")
+        .current_dir(root)
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()?;
+    if !branch.status.success() {
+        return None;
+    }
+    let mut branch = String::from_utf8(branch.stdout).ok()?.trim().to_string();
+    if branch.is_empty() {
+        let head = Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .ok()?;
+        if !head.status.success() {
+            return None;
+        }
+        branch = format!("detached@{}", String::from_utf8(head.stdout).ok()?.trim());
+    }
+
+    let status = Command::new("git")
+        .current_dir(root)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+    if !status.status.success() {
+        return None;
+    }
+    Some(GitStatus {
+        branch,
+        changed: String::from_utf8(status.stdout).ok()?.lines().count(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use uuid::Uuid;
+
+    fn temporary_directory() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("kamui-status-{}", Uuid::new_v4()));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn git_status_reports_branch_and_changed_files() {
+        let root = temporary_directory();
+        assert!(
+            Command::new("git")
+                .args(["init", "-b", "status-test"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(root.join("one.txt"), "one").unwrap();
+        fs::write(root.join("two.txt"), "two").unwrap();
+
+        let status = git_status(&root).unwrap();
+
+        assert_eq!(status.branch, "status-test");
+        assert_eq!(status.changed, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_status_returns_none_outside_a_repository() {
+        let root = temporary_directory();
+        assert!(git_status(&root).is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn make_title_truncates_long_input() {

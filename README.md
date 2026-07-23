@@ -150,6 +150,10 @@ new chat, but it is only saved as a session after the first successful response.
 and `/resume <id>` to continue an earlier conversation. Use `/help` inside the chat to list all
 session commands.
 
+The startup status card shows the Kamui version, project path, Git branch and changed-file count,
+active model, available tools, connected MCP servers, and project instruction file. Run `/status`
+at any time to refresh it after repository changes.
+
 After the first response, the active provider generates a short session title. `/sessions` shows
 that title together with the last-updated timestamp, message count, and total token usage. Tokens
 used to generate the title are included in session usage analytics.

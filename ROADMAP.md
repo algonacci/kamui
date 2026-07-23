@@ -187,6 +187,7 @@ animates until the first token, and `Ctrl+C` mid-turn returns to the prompt inst
 
 ## Phase 6: Terminal Experience
 
+- [x] Project status card and `/status` refresh
 - [ ] Markdown rendering
 - [ ] Syntax highlighting
 - [x] Thinking indicator (braille spinner until the first token)

@@ -194,13 +194,22 @@ animates until the first token, and `Ctrl+C` mid-turn returns to the prompt inst
 
 ## Later: Extensibility and Remote Work
 
-- [ ] MCP client
+- [x] MCP client
 - [ ] Plugin API and manager
 - [ ] Background jobs and job queue
 - [ ] Scheduled tasks
 - [ ] Worker nodes and remote execution
 - [ ] Local memory and RAG
 - [ ] Multi-agent workflows
+
+The MCP client is built (`src/mcp.rs`, via the `rmcp` SDK). Servers declared as `[mcp.<name>]` in the
+global `kamui.toml` are launched as child processes over stdio; each tool they advertise is wrapped
+as a Kamui `Tool` with a `<server>__<tool>` name, so MCP tools flow through the same registry,
+permission policy, and agent loop as the built-ins. Every MCP call asks for approval unless the
+server is marked `trusted`. Project files may not declare servers, because launching one is arbitrary
+code execution. A server that fails to start is reported and skipped rather than blocking startup.
+Only stdio transport and the tools capability are supported; HTTP transport, resources, and prompts
+are not.
 
 ## Not Planned Soon
 

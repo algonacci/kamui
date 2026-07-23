@@ -63,6 +63,11 @@ effort or operational risk is disproportionate to their immediate value.
   are prefixed with `rtk` to compress their output. Commands with shell operators, commands already
   prefixed with `rtk`, and all commands on systems without RTK run directly. The first result line
   records the exact command line executed.
+- MCP servers declared as `[mcp.<name>]` in the global config are launched at startup over stdio;
+  each advertised tool joins the registry as `<server>__<tool>` and requires approval per call unless
+  the server sets `trusted = true`. A server that fails to start is reported and skipped. Project
+  configs may not declare servers, since launching one is arbitrary code execution. Only stdio
+  transport and the tools capability are supported.
 - `patch_file` edits one file per call by exact-match replacement and shows a +/- preview before
   the same `y`/`yes` approval. `old_text` must match exactly once or the patch is rejected with
   recovery guidance; empty `old_text` creates a new file that must not exist. Matching is
@@ -118,6 +123,7 @@ Important modules:
 - `src/prompt.rs`: the agentic system prompt, combined with project instructions per request.
 - `src/compaction.rs`: rolling-summary context compaction (threshold, message selection, summary
   request); the chat loop drives it automatically and via `/compact`.
+- `src/mcp.rs`: MCP client over stdio via the `rmcp` SDK; wraps each server tool as a Kamui `Tool`.
 - `src/chat.rs`: interactive loop, streaming display, session commands, title generation, the
   streaming tool agent loop, and graceful shutdown.
 - `src/context.rs`: project instruction discovery and safe `@file`, `@diff`, and `@staged`

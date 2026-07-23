@@ -55,6 +55,19 @@ api_key = \"\"
 # provider = \"ollama\"
 # model = \"codeqwen:latest\"
 # tools = false          # many small local models do not support tools
+
+# MCP servers are launched as child processes and their tools are offered to the
+# model alongside the built-in ones. Global-only: a project kamui.toml may not
+# define these. Each call asks for approval unless the server is marked trusted.
+#
+# [mcp.filesystem]
+# command = \"npx\"
+# args = [\"-y\", \"@modelcontextprotocol/server-filesystem\", \".\"]
+#
+# [mcp.excel]
+# command = \"uvx\"
+# args = [\"mcp-excel\"]
+# trusted = true         # skip the per-call approval for this server
 ";
 
 /// One provider+model configuration the user can run under.
@@ -70,11 +83,22 @@ pub struct Profile {
     pub tools: bool,
 }
 
+/// An MCP server Kamui launches and talks to over stdio.
+#[derive(Debug, Clone)]
+pub struct McpServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    /// When true, this server's tools run without per-call approval.
+    pub trusted: bool,
+}
+
 /// Fully resolved runtime configuration: every available profile plus the default choice.
 #[derive(Debug)]
 pub struct Config {
     pub profiles: Vec<Profile>,
     pub default_profile: String,
+    pub mcp_servers: Vec<McpServer>,
 }
 
 impl Config {
@@ -109,6 +133,18 @@ struct ConfigFile {
     providers: HashMap<String, ProviderSection>,
     #[serde(default)]
     profiles: HashMap<String, ProfileSection>,
+    /// MCP servers to launch. Global-only: a project file must not spawn processes.
+    #[serde(default)]
+    mcp: HashMap<String, McpSection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct McpSection {
+    command: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    trusted: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -171,20 +207,47 @@ fn has_any_key(file: &ConfigFile) -> bool {
 
 /// Merge a global file with an optional project file into a resolved `Config`. Kept separate from
 /// disk access so the precedence and safety rules can be tested directly.
-fn resolve(global: ConfigFile, project: Option<ConfigFile>) -> Result<Config> {
-    if let Some(project) = &project
-        && declares_key(project)
-    {
-        anyhow::bail!(
-            "a project kamui.toml must not contain an api_key; keep secrets in the global config"
-        );
+fn resolve(mut global: ConfigFile, project: Option<ConfigFile>) -> Result<Config> {
+    if let Some(project) = &project {
+        if declares_key(project) {
+            anyhow::bail!(
+                "a project kamui.toml must not contain an api_key; keep secrets in the global config"
+            );
+        }
+        // Launching a server is arbitrary code execution, so a checked-in project file may not do it.
+        if !project.mcp.is_empty() {
+            anyhow::bail!(
+                "a project kamui.toml must not define [mcp.*] servers; declare them in the global config"
+            );
+        }
     }
 
-    if global.profiles.is_empty() {
-        resolve_flat(global, project)
+    let mcp_servers = resolve_mcp_servers(std::mem::take(&mut global.mcp))?;
+    let mut config = if global.profiles.is_empty() {
+        resolve_flat(global, project)?
     } else {
-        resolve_profiles(global, project)
+        resolve_profiles(global, project)?
+    };
+    config.mcp_servers = mcp_servers;
+    Ok(config)
+}
+
+/// Turn `[mcp.<name>]` blocks into launchable server definitions, ordered by name.
+fn resolve_mcp_servers(sections: HashMap<String, McpSection>) -> Result<Vec<McpServer>> {
+    let mut servers = Vec::with_capacity(sections.len());
+    for (name, section) in sections {
+        let command = section
+            .command
+            .with_context(|| format!("mcp server '{name}' is missing a command"))?;
+        servers.push(McpServer {
+            name,
+            command,
+            args: section.args,
+            trusted: section.trusted,
+        });
     }
+    servers.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(servers)
 }
 
 /// A project file may not set an api_key anywhere: flat, in a shared provider, or per-profile.
@@ -238,6 +301,7 @@ fn resolve_flat(global: ConfigFile, project: Option<ConfigFile>) -> Result<Confi
     Ok(Config {
         default_profile: profile.name.clone(),
         profiles: vec![profile],
+        mcp_servers: Vec::new(),
     })
 }
 
@@ -302,6 +366,7 @@ fn resolve_profiles(global: ConfigFile, project: Option<ConfigFile>) -> Result<C
     Ok(Config {
         profiles,
         default_profile,
+        mcp_servers: Vec::new(),
     })
 }
 
@@ -458,6 +523,46 @@ mod tests {
         let project = file("default_profile = \"b\"");
         let config = resolve(global, Some(project)).unwrap();
         assert_eq!(config.default_profile, "b");
+    }
+
+    #[test]
+    fn resolves_mcp_servers_from_the_global_file() {
+        let config = resolve(
+            file(
+                "model = \"m\"\n[provider]\napi_key = \"k\"\n\
+                 [mcp.excel]\ncommand = \"uvx\"\nargs = [\"mcp-excel\"]\n\
+                 [mcp.files]\ncommand = \"npx\"\ntrusted = true",
+            ),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.mcp_servers.len(), 2);
+        // Sorted by name for a stable order.
+        assert_eq!(config.mcp_servers[0].name, "excel");
+        assert_eq!(config.mcp_servers[0].command, "uvx");
+        assert_eq!(config.mcp_servers[0].args, vec!["mcp-excel".to_string()]);
+        assert!(!config.mcp_servers[0].trusted); // confirmation required by default
+        assert!(config.mcp_servers[1].trusted);
+    }
+
+    #[test]
+    fn rejects_mcp_servers_in_a_project_file() {
+        let global = file("model = \"m\"\n[provider]\napi_key = \"k\"");
+        let project = file("[mcp.evil]\ncommand = \"curl\"");
+
+        let error = resolve(global, Some(project)).unwrap_err();
+        assert!(error.to_string().contains("must not define [mcp.*]"));
+    }
+
+    #[test]
+    fn an_mcp_server_needs_a_command() {
+        let error = resolve(
+            file("model = \"m\"\n[provider]\napi_key = \"k\"\n[mcp.broken]\nargs = [\"x\"]"),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("missing a command"));
     }
 
     #[test]

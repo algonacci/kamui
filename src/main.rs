@@ -2,6 +2,7 @@ mod chat;
 mod compaction;
 mod config;
 mod context;
+mod mcp;
 mod prompt;
 mod provider;
 mod storage;
@@ -41,7 +42,11 @@ async fn main() -> Result<()> {
     let database = Database::open()?;
     let project = ProjectContext::discover()?;
 
-    chat::start_chat(config, &database, &project, resume_id, |profile| {
+    // Connect MCP servers before the chat starts so their tools are offered from the first turn.
+    let mcp_tools = mcp::connect_all(&config.mcp_servers).await;
+    let tools = tools::ToolRegistry::with_defaults(project.root().to_path_buf(), mcp_tools);
+
+    chat::start_chat(config, tools, &database, &project, resume_id, |profile| {
         Box::new(OpenAIProvider::new(
             profile.api_key.clone(),
             profile.base_url.clone(),

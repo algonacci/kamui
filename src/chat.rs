@@ -22,6 +22,7 @@ const ACTIVE_PROFILE_KEY: &str = "active_profile";
 
 pub async fn start_chat<F>(
     config: Config,
+    tools: ToolRegistry,
     database: &Database,
     project: &ProjectContext,
     resume_id: Option<String>,
@@ -50,8 +51,6 @@ where
         println!("Instructions: {name}");
     }
     println!("Type /help for commands or exit to quit.\n");
-
-    let tools = ToolRegistry::with_defaults(project.root().to_path_buf());
 
     let (mut session, mut messages) = match resume_id {
         Some(id) => {

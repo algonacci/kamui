@@ -279,6 +279,31 @@ line of every result shows the exact command that ran.
 The whole turn is saved to session history, including the tool calls and their results, so a resumed
 session replays the tool interactions the model relied on.
 
+## MCP servers
+
+Kamui is an [MCP](https://modelcontextprotocol.io) client. Declare servers in your **global**
+`kamui.toml` and Kamui launches them at startup, offering their tools to the model alongside the
+built-in ones:
+
+```toml
+[mcp.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+[mcp.excel]
+command = "uvx"
+args = ["mcp-excel"]
+trusted = true          # skip the per-call approval for this server
+```
+
+Their tools appear as `<server>__<tool>` (for example `excel__read_sheet`) so they cannot collide
+with the built-ins. Every MCP call asks for your approval first — third-party servers can do
+anything — unless you mark that server `trusted`. A server that fails to start is reported and
+skipped, so a broken entry never prevents Kamui from running.
+
+Servers may only be declared in the global config: launching one is arbitrary code execution, so a
+checked-in project file is not allowed to do it. Only stdio servers are supported today.
+
 ## RTK integration direction
 
 [RTK](https://github.com/rtk-ai/rtk) is an optional execution backend for the `run_command` tool.

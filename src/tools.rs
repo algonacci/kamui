@@ -16,7 +16,7 @@ const MAX_COMMAND_OUTPUT: usize = 16 * 1024;
 /// side effects returns `true` from `requires_confirmation` so the chat loop asks the user first.
 #[async_trait]
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     fn definition(&self) -> ToolDefinition;
     fn requires_confirmation(&self) -> bool {
         false
@@ -34,21 +34,22 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn with_defaults(project_root: PathBuf) -> Self {
-        Self {
-            tools: vec![
-                Box::new(ReadFileTool {
-                    root: project_root.clone(),
-                }),
-                Box::new(ListDirectoryTool {
-                    root: project_root.clone(),
-                }),
-                Box::new(RunCommandTool {
-                    root: project_root.clone(),
-                }),
-                Box::new(PatchFileTool { root: project_root }),
-            ],
-        }
+    /// The built-in project tools, plus any externally provided ones (e.g. from MCP servers).
+    pub fn with_defaults(project_root: PathBuf, extra: Vec<Box<dyn Tool>>) -> Self {
+        let mut tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(ReadFileTool {
+                root: project_root.clone(),
+            }),
+            Box::new(ListDirectoryTool {
+                root: project_root.clone(),
+            }),
+            Box::new(RunCommandTool {
+                root: project_root.clone(),
+            }),
+            Box::new(PatchFileTool { root: project_root }),
+        ];
+        tools.extend(extra);
+        Self { tools }
     }
 
     /// A preview of what a confirmation-gated call would do, if the tool provides one.
@@ -93,7 +94,7 @@ struct ReadFileTool {
 
 #[async_trait]
 impl Tool for ReadFileTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "read_file"
     }
 
@@ -135,7 +136,7 @@ struct ListDirectoryTool {
 
 #[async_trait]
 impl Tool for ListDirectoryTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "list_directory"
     }
 
@@ -209,7 +210,7 @@ fn route_through_rtk(command: &str, rtk_is_available: bool) -> bool {
 
 #[async_trait]
 impl Tool for RunCommandTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "run_command"
     }
 
@@ -319,7 +320,7 @@ fn parse_patch_arguments(arguments: &str) -> Result<PatchArguments> {
 
 #[async_trait]
 impl Tool for PatchFileTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "patch_file"
     }
 
@@ -490,7 +491,7 @@ mod tests {
     async fn read_file_returns_file_contents() {
         let root = project_root();
         fs::write(root.join("note.txt"), "hello tools").unwrap();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
         let call = ToolCall {
             id: "c1".to_string(),
             name: "read_file".to_string(),
@@ -504,7 +505,7 @@ mod tests {
     #[tokio::test]
     async fn read_file_rejects_paths_outside_the_project() {
         let root = project_root();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
         let call = ToolCall {
             id: "c1".to_string(),
             name: "read_file".to_string(),
@@ -517,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_rejects_invalid_json_arguments() {
-        let registry = ToolRegistry::with_defaults(std::env::temp_dir());
+        let registry = ToolRegistry::with_defaults(std::env::temp_dir(), Vec::new());
         let call = ToolCall {
             id: "c1".to_string(),
             name: "read_file".to_string(),
@@ -529,7 +530,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_reports_unknown_tools() {
-        let registry = ToolRegistry::with_defaults(std::env::temp_dir());
+        let registry = ToolRegistry::with_defaults(std::env::temp_dir(), Vec::new());
         let call = ToolCall {
             id: "c1".to_string(),
             name: "launch_missiles".to_string(),
@@ -544,7 +545,7 @@ mod tests {
         let root = project_root();
         fs::create_dir(root.join("src")).unwrap();
         fs::write(root.join("README.md"), "x").unwrap();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
         let call = ToolCall {
             id: "c1".to_string(),
             name: "list_directory".to_string(),
@@ -562,7 +563,7 @@ mod tests {
     async fn list_directory_rejects_a_file_path() {
         let root = project_root();
         fs::write(root.join("note.txt"), "x").unwrap();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
         let call = ToolCall {
             id: "c1".to_string(),
             name: "list_directory".to_string(),
@@ -575,7 +576,7 @@ mod tests {
 
     #[test]
     fn only_mutating_tools_require_confirmation() {
-        let registry = ToolRegistry::with_defaults(std::env::temp_dir());
+        let registry = ToolRegistry::with_defaults(std::env::temp_dir(), Vec::new());
         assert!(registry.requires_confirmation("run_command"));
         assert!(registry.requires_confirmation("patch_file"));
         assert!(!registry.requires_confirmation("read_file"));
@@ -585,7 +586,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_command_reports_output_and_exit_code() {
-        let registry = ToolRegistry::with_defaults(std::env::temp_dir());
+        let registry = ToolRegistry::with_defaults(std::env::temp_dir(), Vec::new());
         let call = ToolCall {
             id: "c1".to_string(),
             name: "run_command".to_string(),
@@ -610,7 +611,7 @@ mod tests {
     async fn patch_file_replaces_an_exact_match() {
         let root = project_root();
         fs::write(root.join("main.rs"), "fn main() { old(); }\n").unwrap();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
 
         let output = registry
             .dispatch(&patch_call(
@@ -635,7 +636,7 @@ mod tests {
             "line one\r\nline two\r\nline three\r\n",
         )
         .unwrap();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
 
         let output = registry
             .dispatch(&patch_call(
@@ -655,7 +656,7 @@ mod tests {
     #[tokio::test]
     async fn patch_file_creates_a_new_file_when_old_text_is_empty() {
         let root = project_root();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
 
         let output = registry
             .dispatch(&patch_call(
@@ -672,7 +673,7 @@ mod tests {
     async fn patch_file_refuses_to_create_over_an_existing_file() {
         let root = project_root();
         fs::write(root.join("a.txt"), "content").unwrap();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
 
         let output = registry
             .dispatch(&patch_call(
@@ -689,7 +690,7 @@ mod tests {
     async fn patch_file_rejects_missing_and_ambiguous_matches() {
         let root = project_root();
         fs::write(root.join("a.txt"), "one two one").unwrap();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
 
         let missing = registry
             .dispatch(&patch_call(
@@ -715,7 +716,7 @@ mod tests {
     #[tokio::test]
     async fn patch_file_rejects_paths_outside_the_project() {
         let root = project_root();
-        let registry = ToolRegistry::with_defaults(root.clone());
+        let registry = ToolRegistry::with_defaults(root.clone(), Vec::new());
 
         let output = registry
             .dispatch(&patch_call(
@@ -729,7 +730,7 @@ mod tests {
 
     #[test]
     fn patch_preview_shows_removed_and_added_lines() {
-        let registry = ToolRegistry::with_defaults(std::env::temp_dir());
+        let registry = ToolRegistry::with_defaults(std::env::temp_dir(), Vec::new());
         let preview = registry
             .preview(&patch_call(
                 r#"{"path":"src/a.rs","old_text":"let a = 1;","new_text":"let a = 2;"}"#,

@@ -12,14 +12,19 @@ can be added without changing the chat interface.
 
 ## Configuration
 
-Kamui is configured with a `kamui.toml` file. The first time you run it, Kamui creates a commented
-template in your OS configuration directory and exits so you can fill in your API key:
+Kamui is configured with a `kamui.toml` file. On first run, Kamui starts an interactive onboarding
+flow that asks for an OpenAI-compatible base URL and API key, discovers the available models, and
+lets you choose the default model. It then saves the configuration and starts the chat immediately:
 
 | Platform | Global config file |
 | --- | --- |
 | Windows | `%APPDATA%\\kamui\\kamui.toml` |
 | Linux | `~/.config/kamui/kamui.toml` |
 | macOS | `~/Library/Application Support/kamui/kamui.toml` |
+
+The API key is entered through a hidden prompt. If the global config exists but is missing either a
+usable model or API key, Kamui runs the same onboarding flow. Existing advanced multi-profile
+configurations are never replaced automatically.
 
 ```toml
 model = "gpt-5.5"

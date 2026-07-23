@@ -3,6 +3,7 @@ mod compaction;
 mod config;
 mod context;
 mod mcp;
+mod onboarding;
 mod prompt;
 mod provider;
 mod storage;
@@ -32,11 +33,13 @@ async fn main() -> Result<()> {
     let config = match Config::load()? {
         config::Loaded::Ready(config) => config,
         config::Loaded::NeedsSetup(path) => {
-            println!("Kamui needs a bit of setup before the first chat.");
-            println!("Edit your config and add your provider api_key (and model):");
-            println!("  {}", path.display());
-            println!("Then run kamui again.");
-            return Ok(());
+            onboarding::run(&path).await?;
+            match Config::load()? {
+                config::Loaded::Ready(config) => config,
+                config::Loaded::NeedsSetup(_) => {
+                    anyhow::bail!("configuration is still incomplete after onboarding")
+                }
+            }
         }
     };
     let database = Database::open()?;

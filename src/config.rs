@@ -176,10 +176,6 @@ impl Config {
             return Ok(Loaded::NeedsSetup(global_path));
         }
         let global = read_config_file(&global_path)?;
-        if !has_any_key(&global) {
-            return Ok(Loaded::NeedsSetup(global_path));
-        }
-
         let project_path = std::env::current_dir()
             .context("could not determine the working directory")?
             .join(CONFIG_FILE);
@@ -188,6 +184,9 @@ impl Config {
         } else {
             None
         };
+        if !has_usable_configuration(&global, project.as_ref()) {
+            return Ok(Loaded::NeedsSetup(global_path));
+        }
 
         resolve(global, project).map(Loaded::Ready)
     }
@@ -195,14 +194,61 @@ impl Config {
 
 /// Whether a global file carries at least one usable API key, in the flat provider, a shared
 /// `[providers.*]` block, or inline on a profile.
-fn has_any_key(file: &ConfigFile) -> bool {
+fn has_usable_configuration(file: &ConfigFile, project: Option<&ConfigFile>) -> bool {
     let non_empty =
         |key: &Option<String>| key.as_ref().is_some_and(|value| !value.trim().is_empty());
-    file.provider
-        .as_ref()
-        .is_some_and(|provider| non_empty(&provider.api_key))
-        || file.providers.values().any(|p| non_empty(&p.api_key))
-        || file.profiles.values().any(|p| non_empty(&p.api_key))
+    if file.profiles.is_empty() {
+        (non_empty(&file.model) || project.is_some_and(|project| non_empty(&project.model)))
+            && file
+                .provider
+                .as_ref()
+                .is_some_and(|provider| non_empty(&provider.api_key))
+    } else {
+        file.providers.values().any(|p| non_empty(&p.api_key))
+            || file.profiles.values().any(|p| non_empty(&p.api_key))
+    }
+}
+
+/// Save the simple provider selected by first-run onboarding while preserving unrelated global
+/// settings such as context limits and MCP servers.
+pub fn save_onboarding(path: &Path, base_url: &str, api_key: &str, model: &str) -> Result<()> {
+    ensure_onboarding_supported(path)?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let mut document: toml::Value =
+        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+    let table = document
+        .as_table_mut()
+        .context("global kamui.toml must contain a TOML table")?;
+    table.insert("model".to_owned(), toml::Value::String(model.to_owned()));
+    let provider = table
+        .entry("provider")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("[provider] must be a TOML table")?;
+    provider.insert(
+        "base_url".to_owned(),
+        toml::Value::String(base_url.trim_end_matches('/').to_owned()),
+    );
+    provider.insert(
+        "api_key".to_owned(),
+        toml::Value::String(api_key.to_owned()),
+    );
+
+    let content = toml::to_string_pretty(&document).context("failed to serialize configuration")?;
+    std::fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))?;
+    restrict_permissions(path)
+}
+
+pub fn ensure_onboarding_supported(path: &Path) -> Result<()> {
+    let file = read_config_file(path)?;
+    if !file.profiles.is_empty() || !file.providers.is_empty() {
+        anyhow::bail!(
+            "interactive setup cannot replace an advanced profiles configuration; edit {} manually",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Merge a global file with an optional project file into a resolved `Config`. Kept separate from
@@ -387,15 +433,88 @@ fn scaffold_global(path: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    std::fs::write(path, TEMPLATE).with_context(|| format!("failed to write {}", path.display()))
+    std::fs::write(path, TEMPLATE)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    restrict_permissions(path)
+}
+
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to secure {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     fn file(toml: &str) -> ConfigFile {
         toml::from_str(toml).unwrap()
+    }
+
+    fn temporary_config(content: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("kamui-config-{}.toml", Uuid::new_v4()));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn setup_detection_requires_both_model_and_key() {
+        assert!(!has_usable_configuration(&file("model = \"gpt-5\""), None));
+        assert!(!has_usable_configuration(
+            &file("[provider]\napi_key = \"sk-1\""),
+            None
+        ));
+        assert!(has_usable_configuration(
+            &file("model = \"gpt-5\"\n[provider]\napi_key = \"sk-1\""),
+            None
+        ));
+    }
+
+    #[test]
+    fn project_model_completes_a_global_key_only_config() {
+        let global = file("[provider]\napi_key = \"sk-1\"");
+        let project = file("model = \"gpt-5\"");
+
+        assert!(has_usable_configuration(&global, Some(&project)));
+    }
+
+    #[test]
+    fn onboarding_preserves_unrelated_global_settings() {
+        let path = temporary_config(
+            "context_window = 8000\n[provider]\ntools = false\n[mcp.files]\ncommand = \"server\"",
+        );
+
+        save_onboarding(&path, "https://api.example.com/v1/", "sk-1", "gpt-5").unwrap();
+        let saved = read_config_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(saved.model.as_deref(), Some("gpt-5"));
+        assert_eq!(saved.context_window, Some(8000));
+        assert_eq!(saved.provider.unwrap().tools, Some(false));
+        assert_eq!(
+            saved.mcp.get("files").unwrap().command.as_deref(),
+            Some("server")
+        );
+    }
+
+    #[test]
+    fn onboarding_does_not_replace_advanced_profiles() {
+        let path = temporary_config("[profiles.main]\nmodel = \"gpt-5\"");
+
+        let error =
+            save_onboarding(&path, "https://api.example.com/v1", "sk-1", "gpt-5").unwrap_err();
+        std::fs::remove_file(path).unwrap();
+
+        assert!(error.to_string().contains("advanced profiles"));
     }
 
     #[test]

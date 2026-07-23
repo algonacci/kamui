@@ -22,6 +22,47 @@ impl OpenAIProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
+
+    /// Discover model identifiers exposed by an OpenAI-compatible provider.
+    pub async fn list_models(api_key: &str, base_url: &str) -> Result<Vec<String>> {
+        let response = Client::new()
+            .get(format!("{}/models", base_url.trim_end_matches('/')))
+            .bearer_auth(api_key)
+            .send()
+            .await
+            .context("failed to call the provider models endpoint")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!("provider returned {status}: {body}");
+        }
+
+        let response: ModelsResponse = response
+            .json()
+            .await
+            .context("provider returned an invalid models response")?;
+        let mut models = response
+            .data
+            .into_iter()
+            .map(|model| model.id)
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        if models.is_empty() {
+            bail!("provider returned no models");
+        }
+        Ok(models)
+    }
+}
+
+#[derive(Deserialize)]
+struct ModelsResponse {
+    data: Vec<Model>,
+}
+
+#[derive(Deserialize)]
+struct Model {
+    id: String,
 }
 
 // Request wire types. These belong to the provider; the core stays agnostic and never

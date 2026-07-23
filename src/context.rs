@@ -85,7 +85,16 @@ impl ProjectContext {
             let (label, content) = match reference.as_str() {
                 "diff" => ("git diff".to_string(), self.read_git_diff(false)?),
                 "staged" => ("git diff --staged".to_string(), self.read_git_diff(true)?),
-                "clipboard" => ("clipboard".to_string(), read_clipboard()?),
+                "clipboard" => match read_clipboard()? {
+                    ClipboardContent::Text(text) => ("clipboard".to_string(), text),
+                    ClipboardContent::Image(image) => {
+                        images.push(image);
+                        context.push_str(
+                            "\n\n<context source=\"clipboard\">(image attached)</context>",
+                        );
+                        continue;
+                    }
+                },
                 _ => (
                     reference.clone(),
                     read_project_file(&self.root, &reference)?,
@@ -272,18 +281,63 @@ fn read_project_image(
     })
 }
 
-/// Read UTF-8 text from the operating system clipboard. Errors clearly when the clipboard is
-/// unavailable (e.g. a headless session) or holds no text, rather than attaching nothing.
-fn read_clipboard() -> Result<String> {
+/// What the clipboard held: text if any, otherwise a pasted image (e.g. a screenshot).
+enum ClipboardContent {
+    Text(String),
+    Image(ImageAttachment),
+}
+
+/// Read the operating system clipboard, preferring text and falling back to image data so a
+/// screenshot can be pasted directly. Errors clearly when the clipboard is unavailable (e.g. a
+/// headless session) or holds neither.
+fn read_clipboard() -> Result<ClipboardContent> {
     let mut clipboard =
         arboard::Clipboard::new().context("could not access the system clipboard")?;
-    let text = clipboard
-        .get_text()
-        .context("the clipboard does not contain text")?;
-    if text.trim().is_empty() {
-        anyhow::bail!("the clipboard is empty");
+
+    if let Ok(text) = clipboard.get_text()
+        && !text.trim().is_empty()
+    {
+        return Ok(ClipboardContent::Text(text));
     }
-    Ok(text)
+
+    match clipboard.get_image() {
+        Ok(image) => Ok(ClipboardContent::Image(encode_png(
+            image.width,
+            image.height,
+            &image.bytes,
+        )?)),
+        Err(_) => anyhow::bail!("the clipboard holds no text or image"),
+    }
+}
+
+/// Encode raw RGBA pixels as a PNG image attachment.
+fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Result<ImageAttachment> {
+    let width = u32::try_from(width).context("clipboard image is too wide")?;
+    let height = u32::try_from(height).context("clipboard image is too tall")?;
+
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .context("failed to encode the clipboard image")?;
+        writer
+            .write_image_data(rgba)
+            .context("failed to encode the clipboard image")?;
+    }
+    if png.len() as u64 > MAX_IMAGE_BYTES {
+        anyhow::bail!(
+            "the clipboard image exceeds the {} MiB image limit",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        );
+    }
+
+    Ok(ImageAttachment {
+        media_type: "image/png".to_string(),
+        data: base64::engine::general_purpose::STANDARD.encode(png),
+    })
 }
 
 fn read_text_file(path: &Path) -> Result<String> {
@@ -508,6 +562,18 @@ mod tests {
 
         assert!(error.contains("image limit"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn encodes_clipboard_pixels_into_a_png_attachment() {
+        // A single opaque red pixel.
+        let attachment = encode_png(1, 1, &[255, 0, 0, 255]).unwrap();
+
+        assert_eq!(attachment.media_type, "image/png");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(attachment.data)
+            .unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n"); // PNG magic number
     }
 
     #[test]

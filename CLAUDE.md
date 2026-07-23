@@ -92,8 +92,10 @@ The process working directory is the project root.
   contents, is stored in session history.
 - `@diff` attaches raw unstaged tracked changes using `git diff`.
 - `@staged` attaches raw staged changes using `git diff --cached`.
-- `@clipboard` attaches the system clipboard's text (via `arboard`); it errors clearly when the
-  clipboard is unavailable (headless) or empty. It is environment-dependent, so it has no unit test.
+- `@clipboard` attaches the system clipboard (via `arboard`): text when present, otherwise clipboard
+  image data encoded as PNG, so a screenshot can be pasted without saving a file. It errors clearly
+  when the clipboard is unavailable (headless) or holds neither. Reading the real clipboard is
+  environment-dependent and has no unit test; the PNG encoding is tested directly.
 - An `@` reference ending in `.png`, `.jpg`, `.jpeg`, `.gif`, or `.webp` is attached as an image
   (base64 `ImageAttachment` on the message), not inlined as text. Images pass the same containment
   checks, are capped at 5 MiB each, are sent only for that request, and require a vision model. The

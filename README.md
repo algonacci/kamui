@@ -211,15 +211,19 @@ Use `@diff` for unstaged tracked changes or `@staged` for changes in the Git ind
 Git context is read-only and can be combined with file references. Untracked files are not included
 in `@diff`; attach them explicitly with `@path`.
 
-Use `@clipboard` to attach the current text contents of your system clipboard — handy for pasting an
-error message, a stack trace, or a snippet from elsewhere:
+Use `@clipboard` to attach whatever is on your system clipboard — text or an image:
 
 ```text
 > Why does this happen? @clipboard
 ```
 
-Reference an image the same way to send it to a vision-capable model. `.png`, `.jpg`, `.jpeg`,
-`.gif`, and `.webp` are attached as images rather than inlined as text:
+If the clipboard holds text (an error message, a stack trace, a snippet) it is attached as text. If
+it holds an image, it is attached as an image — so you can take a screenshot (`Win+Shift+S` on
+Windows, `Cmd+Shift+Ctrl+4` on macOS) and paste it straight into a prompt without saving a file
+first. Terminals cannot receive pasted image data directly, so `@clipboard` is how images get in.
+
+You can also reference an image file. `.png`, `.jpg`, `.jpeg`, `.gif`, and `.webp` are attached as
+images rather than inlined as text:
 
 ```text
 > What is wrong with this layout? @screenshot.png

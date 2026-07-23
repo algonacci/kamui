@@ -111,7 +111,7 @@ Raw `git diff` remains available for code review because a condensed diff can om
 ## Phase 4: Context Management
 
 - [ ] Directory context with ignore rules
-- [x] Clipboard context (`@clipboard`)
+- [x] Clipboard context (`@clipboard`, text or image)
 - [x] Conversation summarization
 - [x] Context compression
 - [ ] Project indexing
@@ -119,9 +119,12 @@ Raw `git diff` remains available for code review because a condensed diff can om
 - [x] Image input
 - [ ] PDF input (not planned — handled via MCP)
 
-Image input is built. Referencing an image (`@shot.png`, also `.jpg`/`.jpeg`/`.gif`/`.webp`) attaches
-it to the request instead of inlining bytes as text: the file is read through the same containment
-checks, capped at 5 MiB, and carried as a base64 `ImageAttachment` on the message. The OpenAI adapter
+Image input is built, from a file or the clipboard. Referencing an image (`@shot.png`, also
+`.jpg`/`.jpeg`/`.gif`/`.webp`) attaches it to the request instead of inlining bytes as text: the file
+is read through the same containment checks, capped at 5 MiB, and carried as a base64
+`ImageAttachment` on the message. `@clipboard` prefers text but falls back to clipboard image data,
+encoding it as PNG, so a screenshot can be pasted straight into a prompt — terminals cannot accept
+pasted image data directly, so this is the paste path. The OpenAI adapter
 emits a content-parts array (`text` plus `image_url` data URLs) only when images are present, so
 text-only requests keep their plain-string content. Images are per-request and are not persisted.
 The model must support vision.

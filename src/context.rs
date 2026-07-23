@@ -1,4 +1,6 @@
+use crate::provider::ImageAttachment;
 use anyhow::{Context, Result};
+use base64::Engine;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,6 +9,14 @@ use std::process::Command;
 const INSTRUCTION_FILES: [&str; 2] = ["KAMUI.md", "AGENTS.md"];
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 const MAX_CONTEXT_BYTES: usize = 128 * 1024;
+const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// A prompt after `@` references are expanded: text context inlined, images carried separately.
+#[derive(Debug)]
+pub struct Expanded {
+    pub text: String,
+    pub images: Vec<ImageAttachment>,
+}
 
 pub struct ProjectContext {
     root: PathBuf,
@@ -50,15 +60,28 @@ impl ProjectContext {
         })
     }
 
-    pub fn expand_file_references(&self, input: &str) -> Result<String> {
+    pub fn expand_file_references(&self, input: &str) -> Result<Expanded> {
         let references = file_references(input);
         if references.is_empty() {
-            return Ok(input.to_string());
+            return Ok(Expanded {
+                text: input.to_string(),
+                images: Vec::new(),
+            });
         }
 
         let mut total_bytes = 0;
         let mut context = String::new();
+        let mut images = Vec::new();
         for reference in references {
+            // Images cannot be inlined as text; they travel as attachments on the message.
+            if let Some(media_type) = image_media_type(Path::new(&reference)) {
+                images.push(read_project_image(&self.root, &reference, media_type)?);
+                context.push_str(&format!(
+                    "\n\n<context source=\"{reference}\">(image attached)</context>"
+                ));
+                continue;
+            }
+
             let (label, content) = match reference.as_str() {
                 "diff" => ("git diff".to_string(), self.read_git_diff(false)?),
                 "staged" => ("git diff --staged".to_string(), self.read_git_diff(true)?),
@@ -78,7 +101,10 @@ impl ProjectContext {
             ));
         }
 
-        Ok(format!("{input}\n\nAttached project context:{context}"))
+        Ok(Expanded {
+            text: format!("{input}\n\nAttached project context:{context}"),
+            images,
+        })
     }
 
     fn read_git_diff(&self, staged: bool) -> Result<String> {
@@ -209,6 +235,43 @@ pub fn list_project_directory(root: &Path, reference: &str) -> Result<String> {
     Ok(listing)
 }
 
+/// Recognize an attachable image by extension, returning its MIME type.
+fn image_media_type(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// Read a project image and encode it for transport. Uses the same containment checks as text.
+fn read_project_image(
+    root: &Path,
+    reference: &str,
+    media_type: &'static str,
+) -> Result<ImageAttachment> {
+    let path = resolve_within_root(root, reference)?;
+    if !path.is_file() {
+        anyhow::bail!("path is not a file: {reference}");
+    }
+    let metadata =
+        fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
+    if metadata.len() > MAX_IMAGE_BYTES {
+        anyhow::bail!(
+            "{reference} exceeds the {} MiB image limit",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        );
+    }
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(ImageAttachment {
+        media_type: media_type.to_string(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
 /// Read UTF-8 text from the operating system clipboard. Errors clearly when the clipboard is
 /// unavailable (e.g. a headless session) or holds no text, rather than attaching nothing.
 fn read_clipboard() -> Result<String> {
@@ -268,8 +331,8 @@ mod tests {
             .expand_file_references("Explain @src/main.rs and @src/main.rs")
             .unwrap();
 
-        assert_eq!(prompt.matches("<context source=").count(), 1);
-        assert!(prompt.contains("fn main() {}"));
+        assert_eq!(prompt.text.matches("<context source=").count(), 1);
+        assert!(prompt.text.contains("fn main() {}"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -297,8 +360,12 @@ mod tests {
 
         let prompt = context.expand_file_references("Review @staged").unwrap();
 
-        assert!(prompt.contains("<context source=\"git diff --staged\">"));
-        assert!(prompt.contains("+hello"));
+        assert!(
+            prompt
+                .text
+                .contains("<context source=\"git diff --staged\">")
+        );
+        assert!(prompt.text.contains("+hello"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -307,7 +374,10 @@ mod tests {
         let root = project();
         let context = ProjectContext::from_root(root.clone()).unwrap();
 
-        assert_eq!(context.expand_file_references("hello").unwrap(), "hello");
+        assert_eq!(
+            context.expand_file_references("hello").unwrap().text,
+            "hello"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -379,8 +449,8 @@ mod tests {
 
         let prompt = context.expand_file_references("Review @diff").unwrap();
 
-        assert!(prompt.contains("<context source=\"git diff\">"));
-        assert!(prompt.contains("+world"));
+        assert!(prompt.text.contains("<context source=\"git diff\">"));
+        assert!(prompt.text.contains("+world"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -401,6 +471,42 @@ mod tests {
 
         assert_eq!(context.instruction_name(), None);
         assert!(context.system_message().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn attaches_an_image_reference_as_an_attachment() {
+        let root = project();
+        fs::write(root.join("shot.png"), b"fake-png-bytes").unwrap();
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+
+        let expanded = context.expand_file_references("look at @shot.png").unwrap();
+
+        assert_eq!(expanded.images.len(), 1);
+        assert_eq!(expanded.images[0].media_type, "image/png");
+        assert!(!expanded.images[0].data.is_empty());
+        // The text notes the attachment but does not inline the bytes.
+        assert!(expanded.text.contains("shot.png"));
+        assert!(!expanded.text.contains("fake-png-bytes"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_images_over_the_size_limit() {
+        let root = project();
+        fs::write(
+            root.join("big.jpg"),
+            vec![0u8; (MAX_IMAGE_BYTES + 1) as usize],
+        )
+        .unwrap();
+        let context = ProjectContext::from_root(root.clone()).unwrap();
+
+        let error = context
+            .expand_file_references("see @big.jpg")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("image limit"));
         fs::remove_dir_all(root).unwrap();
     }
 

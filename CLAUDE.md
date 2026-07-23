@@ -94,6 +94,10 @@ The process working directory is the project root.
 - `@staged` attaches raw staged changes using `git diff --cached`.
 - `@clipboard` attaches the system clipboard's text (via `arboard`); it errors clearly when the
   clipboard is unavailable (headless) or empty. It is environment-dependent, so it has no unit test.
+- An `@` reference ending in `.png`, `.jpg`, `.jpeg`, `.gif`, or `.webp` is attached as an image
+  (base64 `ImageAttachment` on the message), not inlined as text. Images pass the same containment
+  checks, are capped at 5 MiB each, are sent only for that request, and require a vision model. The
+  OpenAI adapter switches message content to a parts array only when images are present.
 - Untracked files are not in `@diff`; users must attach them explicitly with `@path`.
 - Raw diff is deliberate. Do not silently replace it with a condensed representation because code
   review may require details omitted by summarization.

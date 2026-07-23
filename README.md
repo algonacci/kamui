@@ -218,6 +218,16 @@ error message, a stack trace, or a snippet from elsewhere:
 > Why does this happen? @clipboard
 ```
 
+Reference an image the same way to send it to a vision-capable model. `.png`, `.jpg`, `.jpeg`,
+`.gif`, and `.webp` are attached as images rather than inlined as text:
+
+```text
+> What is wrong with this layout? @screenshot.png
+```
+
+Each image is limited to 5 MiB and is sent only with that request. The active model must support
+image input; text-only models will reject it.
+
 ## Tools
 
 Kamui offers the model four tools: `list_directory` (discover what is in a folder), `read_file`

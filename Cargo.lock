@@ -891,6 +891,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-trait",
+ "base64",
  "chrono",
  "directories",
  "reqwest",

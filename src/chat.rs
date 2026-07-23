@@ -166,8 +166,8 @@ where
         }
 
         let user_message = Message::user(input);
-        let expanded_input = match project.expand_file_references(input) {
-            Ok(input) => input,
+        let expanded = match project.expand_file_references(input) {
+            Ok(expanded) => expanded,
             Err(error) => {
                 eprintln!("\nCould not attach file: {error:#}\n");
                 continue;
@@ -218,7 +218,7 @@ where
         }
         let mut turn_messages = vec![Message::system(system)];
         turn_messages.extend(messages[summarized_upto..].iter().cloned());
-        turn_messages.push(Message::user(expanded_input));
+        turn_messages.push(Message::user_with_images(expanded.text, expanded.images));
 
         // Agent loop: stream a turn, run any tools it requests, and repeat until a plain answer.
         // `tool_trail` collects this turn's intermediate tool-request and tool-result messages so

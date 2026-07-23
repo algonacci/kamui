@@ -116,8 +116,15 @@ Raw `git diff` remains available for code review because a condensed diff can om
 - [x] Context compression
 - [ ] Project indexing
 - [ ] Semantic search
-- [ ] Image input
+- [x] Image input
 - [ ] PDF input (not planned — handled via MCP)
+
+Image input is built. Referencing an image (`@shot.png`, also `.jpg`/`.jpeg`/`.gif`/`.webp`) attaches
+it to the request instead of inlining bytes as text: the file is read through the same containment
+checks, capped at 5 MiB, and carried as a base64 `ImageAttachment` on the message. The OpenAI adapter
+emits a content-parts array (`text` plus `image_url` data URLs) only when images are present, so
+text-only requests keep their plain-string content. Images are per-request and are not persisted.
+The model must support vision.
 
 Context compaction is built (`src/compaction.rs`). When a session's un-summarized recent history
 grows past a byte threshold (about half the profile's `context_window`, or a default), the older

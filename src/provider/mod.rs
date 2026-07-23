@@ -14,10 +14,20 @@ pub enum Role {
     Tool,
 }
 
+/// An image attached to a message, carried as base64 so it is provider-independent.
+#[derive(Clone, Debug)]
+pub struct ImageAttachment {
+    /// MIME type, e.g. `image/png`.
+    pub media_type: String,
+    pub data: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Message {
     pub role: Role,
     pub content: String,
+    /// Images attached to this message. Only meaningful on user messages.
+    pub images: Vec<ImageAttachment>,
     /// Tool calls requested by an assistant turn. Empty for ordinary messages.
     pub tool_calls: Vec<ToolCall>,
     /// The call this message answers. Set only on tool-result messages.
@@ -37,10 +47,22 @@ impl Message {
         Self::text(Role::Assistant, content)
     }
 
+    /// A user turn carrying attached images alongside its text.
+    pub fn user_with_images(content: impl Into<String>, images: Vec<ImageAttachment>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            images,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
     fn text(role: Role, content: impl Into<String>) -> Self {
         Self {
             role,
             content: content.into(),
+            images: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
         }
@@ -51,6 +73,7 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            images: Vec::new(),
             tool_calls,
             tool_call_id: None,
         }
@@ -61,6 +84,7 @@ impl Message {
         Self {
             role: Role::Tool,
             content: content.into(),
+            images: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
         }
@@ -87,6 +111,7 @@ impl Message {
         Ok(Self {
             role,
             content,
+            images: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
         })

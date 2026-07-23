@@ -54,11 +54,34 @@ struct StreamOptions {
 struct WireMessage<'a> {
     role: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<&'a str>,
+    content: Option<WireContent<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tool_calls: Vec<WireToolCall<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<&'a str>,
+}
+
+/// Message content is a plain string unless images are attached, in which case OpenAI expects an
+/// array of typed parts.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WireContent<'a> {
+    Text(&'a str),
+    Parts(Vec<WirePart<'a>>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum WirePart<'a> {
+    #[serde(rename = "text")]
+    Text { text: &'a str },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: WireImageUrl },
+}
+
+#[derive(Serialize)]
+struct WireImageUrl {
+    url: String,
 }
 
 #[derive(Serialize)]
@@ -94,11 +117,27 @@ fn wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> {
 }
 
 fn wire_message(message: &Message) -> WireMessage<'_> {
-    // OpenAI expects a null content on an assistant turn that only requests tool calls.
-    let content = if message.content.is_empty() && !message.tool_calls.is_empty() {
+    let content = if !message.images.is_empty() {
+        // With images, content becomes an array of text and image parts.
+        let mut parts = Vec::with_capacity(message.images.len() + 1);
+        if !message.content.is_empty() {
+            parts.push(WirePart::Text {
+                text: &message.content,
+            });
+        }
+        for image in &message.images {
+            parts.push(WirePart::ImageUrl {
+                image_url: WireImageUrl {
+                    url: format!("data:{};base64,{}", image.media_type, image.data),
+                },
+            });
+        }
+        Some(WireContent::Parts(parts))
+    } else if message.content.is_empty() && !message.tool_calls.is_empty() {
+        // OpenAI expects a null content on an assistant turn that only requests tool calls.
         None
     } else {
-        Some(message.content.as_str())
+        Some(WireContent::Text(&message.content))
     };
     WireMessage {
         role: message.role_name(),
@@ -550,6 +589,34 @@ mod tests {
         assert_eq!(value["messages"][2]["role"], "tool");
         assert_eq!(value["messages"][2]["tool_call_id"], "call_1");
         assert_eq!(value["messages"][2]["content"], "fn main() {}");
+    }
+
+    #[test]
+    fn serializes_images_as_content_parts() {
+        use crate::provider::ImageAttachment;
+        let messages = vec![Message::user_with_images(
+            "what is this?",
+            vec![ImageAttachment {
+                media_type: "image/png".to_string(),
+                data: "QUJD".to_string(),
+            }],
+        )];
+        let value = serde_json::to_value(wire_messages(&messages)).unwrap();
+
+        assert_eq!(value[0]["content"][0]["type"], "text");
+        assert_eq!(value[0]["content"][0]["text"], "what is this?");
+        assert_eq!(value[0]["content"][1]["type"], "image_url");
+        assert_eq!(
+            value[0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,QUJD"
+        );
+    }
+
+    #[test]
+    fn serializes_text_only_messages_as_a_plain_string() {
+        let messages = vec![Message::user("hello")];
+        let value = serde_json::to_value(wire_messages(&messages)).unwrap();
+        assert_eq!(value[0]["content"], "hello");
     }
 
     #[test]

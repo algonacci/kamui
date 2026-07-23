@@ -197,9 +197,19 @@ Reference a UTF-8 text file relative to the project root with `@path`:
 > Explain the error handling in @src/main.rs
 ```
 
+Reference a directory to attach everything inside it:
+
+```text
+> Review the error handling across @src
+```
+
+Directory attachment honours `.gitignore` and skips hidden files, so build output and dependencies
+stay out. Files are attached until the context budget or a 50-file cap runs out; the rest are noted
+as omitted instead of failing the prompt.
+
 Referenced files are attached only to that request and are not copied into session history. Each
 file is limited to 64 KiB and all attached files together are limited to 128 KiB. Absolute paths,
-directories, binary files, and paths or symlinks outside the project are rejected.
+binary files, and paths or symlinks outside the project are rejected.
 
 Use `@diff` for unstaged tracked changes or `@staged` for changes in the Git index:
 

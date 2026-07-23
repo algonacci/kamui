@@ -10,6 +10,7 @@ const INSTRUCTION_FILES: [&str; 2] = ["KAMUI.md", "AGENTS.md"];
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 const MAX_CONTEXT_BYTES: usize = 128 * 1024;
 const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_DIRECTORY_FILES: usize = 50;
 
 /// A prompt after `@` references are expanded: text context inlined, images carried separately.
 #[derive(Debug)]
@@ -73,6 +74,33 @@ impl ProjectContext {
         let mut context = String::new();
         let mut images = Vec::new();
         for reference in references {
+            // Named sources are not paths, so they are resolved before any filesystem lookup.
+            let named = match reference.as_str() {
+                "diff" => Some(("git diff".to_string(), self.read_git_diff(false)?)),
+                "staged" => Some(("git diff --staged".to_string(), self.read_git_diff(true)?)),
+                "clipboard" => match read_clipboard()? {
+                    ClipboardContent::Text(text) => Some(("clipboard".to_string(), text)),
+                    ClipboardContent::Image(image) => {
+                        images.push(image);
+                        context.push_str(
+                            "\n\n<context source=\"clipboard\">(image attached)</context>",
+                        );
+                        continue;
+                    }
+                },
+                _ => None,
+            };
+            if let Some((label, content)) = named {
+                total_bytes += content.len();
+                if total_bytes > MAX_CONTEXT_BYTES {
+                    anyhow::bail!("attached context exceeds {} KiB", MAX_CONTEXT_BYTES / 1024);
+                }
+                context.push_str(&format!(
+                    "\n\n<context source=\"{label}\">\n{content}\n</context>"
+                ));
+                continue;
+            }
+
             // Images cannot be inlined as text; they travel as attachments on the message.
             if let Some(media_type) = image_media_type(Path::new(&reference)) {
                 images.push(read_project_image(&self.root, &reference, media_type)?);
@@ -82,31 +110,22 @@ impl ProjectContext {
                 continue;
             }
 
-            let (label, content) = match reference.as_str() {
-                "diff" => ("git diff".to_string(), self.read_git_diff(false)?),
-                "staged" => ("git diff --staged".to_string(), self.read_git_diff(true)?),
-                "clipboard" => match read_clipboard()? {
-                    ClipboardContent::Text(text) => ("clipboard".to_string(), text),
-                    ClipboardContent::Image(image) => {
-                        images.push(image);
-                        context.push_str(
-                            "\n\n<context source=\"clipboard\">(image attached)</context>",
-                        );
-                        continue;
-                    }
-                },
-                _ => (
-                    reference.clone(),
-                    read_project_file(&self.root, &reference)?,
-                ),
-            };
+            let path = resolve_within_root(&self.root, &reference)?;
+            if path.is_dir() {
+                let budget = MAX_CONTEXT_BYTES.saturating_sub(total_bytes);
+                let (blocks, used) = read_project_directory(&self.root, &path, &reference, budget)?;
+                total_bytes += used;
+                context.push_str(&blocks);
+                continue;
+            }
 
+            let content = read_text_file(&path)?;
             total_bytes += content.len();
             if total_bytes > MAX_CONTEXT_BYTES {
                 anyhow::bail!("attached context exceeds {} KiB", MAX_CONTEXT_BYTES / 1024);
             }
             context.push_str(&format!(
-                "\n\n<context source=\"{label}\">\n{content}\n</context>"
+                "\n\n<context source=\"{reference}\">\n{content}\n</context>"
             ));
         }
 
@@ -242,6 +261,71 @@ pub fn list_project_directory(root: &Path, reference: &str) -> Result<String> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(listing)
+}
+
+/// Attach the text files inside a project directory, honouring `.gitignore` and skipping hidden
+/// files. Files are added in path order until the remaining context budget or the file cap runs
+/// out; anything left over (too large, binary, or over budget) is reported rather than failing the
+/// whole prompt. Returns the rendered context blocks and how many bytes they consumed.
+fn read_project_directory(
+    root: &Path,
+    directory: &Path,
+    reference: &str,
+    budget: usize,
+) -> Result<(String, usize)> {
+    let mut paths: Vec<PathBuf> = ignore::WalkBuilder::new(directory)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        // Honour .gitignore even when the project is not (yet) a git repository.
+        .require_git(false)
+        .build()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .map(|entry| entry.into_path())
+        .collect();
+    paths.sort();
+
+    let mut blocks = String::new();
+    let mut used = 0;
+    let mut attached = 0;
+    let mut omitted = 0;
+    for path in paths {
+        if attached >= MAX_DIRECTORY_FILES {
+            omitted += 1;
+            continue;
+        }
+        // Binary or oversized files are skipped, not fatal.
+        let Ok(content) = read_text_file(&path) else {
+            omitted += 1;
+            continue;
+        };
+        if used + content.len() > budget {
+            omitted += 1;
+            continue;
+        }
+        used += content.len();
+        attached += 1;
+        let label = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        blocks.push_str(&format!(
+            "\n\n<context source=\"{label}\">\n{content}\n</context>"
+        ));
+    }
+
+    if attached == 0 && omitted == 0 {
+        anyhow::bail!("no attachable text files found in {reference}");
+    }
+    if omitted > 0 {
+        blocks.push_str(&format!(
+            "\n\n<context source=\"{reference}\">({omitted} more files omitted: binary, too large, or over the context budget)</context>"
+        ));
+    }
+    Ok((blocks, used))
 }
 
 /// Recognize an attachable image by extension, returning its MIME type.
@@ -447,13 +531,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_directory_references() {
+    fn attaches_a_directory_and_honours_ignore_rules() {
         let root = project();
         fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join("src/keep.rs"), "fn keep() {}").unwrap();
+        fs::write(root.join("src/skip.rs"), "fn skip() {}").unwrap();
+        fs::write(root.join("src/.gitignore"), "skip.rs\n").unwrap();
         let context = ProjectContext::from_root(root.clone()).unwrap();
 
-        let error = context.expand_file_references("Read @src").unwrap_err();
-        assert!(error.to_string().contains("not a file"));
+        let expanded = context.expand_file_references("Review @src").unwrap();
+
+        assert!(expanded.text.contains("fn keep() {}"));
+        // The ignored file and the hidden .gitignore itself are left out.
+        assert!(!expanded.text.contains("fn skip() {}"));
+        assert!(!expanded.text.contains(".gitignore"));
         fs::remove_dir_all(root).unwrap();
     }
 

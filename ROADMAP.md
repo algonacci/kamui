@@ -110,7 +110,7 @@ Raw `git diff` remains available for code review because a condensed diff can om
 
 ## Phase 4: Context Management
 
-- [ ] Directory context with ignore rules
+- [x] Directory context with ignore rules
 - [x] Clipboard context (`@clipboard`, text or image)
 - [x] Conversation summarization
 - [x] Context compression
@@ -118,6 +118,12 @@ Raw `git diff` remains available for code review because a condensed diff can om
 - [ ] Semantic search
 - [x] Image input
 - [ ] PDF input (not planned — handled via MCP)
+
+Directory context is built. Referencing a directory (`@src`) attaches the text files inside it,
+walking with the `ignore` crate so `.gitignore`, global excludes, and hidden files are honoured even
+outside a git repository. Files are attached in path order until the shared 128 KiB context budget
+or a 50-file cap runs out; anything left over (binary, too large, or over budget) is reported in a
+trailing note instead of failing the prompt.
 
 Image input is built, from a file or the clipboard. Referencing an image (`@shot.png`, also
 `.jpg`/`.jpeg`/`.gif`/`.webp`) attaches it to the request instead of inlining bytes as text: the file

@@ -3,11 +3,17 @@
 Kamui is evolving from a provider-agnostic chat CLI into a repository-aware coding agent. The
 roadmap prioritizes a safe, useful read-only workflow before file mutation and command execution.
 
-Status: Phases 1–3 are complete and Phase 5 is well underway. Kamui is a working coding agent — it
-explores, reads, runs commands (with approval and optional RTK compression), and edits files (with a
-diff preview and approval), persisting whole turns and letting the user interrupt with `Ctrl+C`. It
-is configured through `kamui.toml`, and `/model` switches between named provider profiles at runtime.
-The main remaining gap is Phase 4 context management for long sessions.
+Status: Phases 1–5 are complete for their planned scope, and the MCP client has shipped. Kamui is a
+working coding agent — it explores, reads, runs commands (with approval and optional RTK
+compression), and edits files (with a diff preview and approval), persisting whole turns and letting
+the user interrupt with `Ctrl+C`. Long sessions compact themselves into a rolling summary. It is
+configured through `kamui.toml`, `/model` switches between named provider profiles at runtime, and
+MCP servers can contribute their own tools.
+
+What remains is deliberately deferred: project indexing and semantic search (large, separate
+efforts), the Phase 6 terminal experience (markdown rendering, syntax highlighting, richer UI), and
+the extensibility items below. Several roadmap entries are marked "not planned" where a simpler
+answer already exists.
 
 ## Phase 1: Chat Foundation
 

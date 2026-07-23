@@ -1,10 +1,14 @@
 # kamui
 
-Provider-agnostic, repository-aware LLM chat CLI written in Rust.
+Provider-agnostic, repository-aware coding agent for the terminal, written in Rust.
 
-The first provider implementation uses the OpenAI Chat Completions API. The core request and
-response types are independent from that API so other providers can be added without changing
-the chat interface.
+Kamui explores your repository, reads files, runs commands, and edits code, with every side effect
+gated behind your approval. Responses stream from any OpenAI-compatible model, `/model` switches
+between providers and models mid-session, long conversations compact themselves so they do not
+outgrow the context window, and MCP servers can contribute their own tools.
+
+The core request and response types are independent of any single provider's API, so new providers
+can be added without changing the chat interface.
 
 ## Configuration
 
@@ -171,6 +175,10 @@ kamui -r <session-id>
 | `/stats` | Show current session usage |
 | `/help` | List available commands |
 | `/exit` | Save and quit |
+
+`Ctrl+C` while a turn is running — waiting on the model, streaming, at an approval prompt, or
+running a command — cancels that turn and returns you to the prompt, killing any running command.
+The cancelled turn is not saved. At the idle prompt, `Ctrl+C` exits.
 
 `/rename` accepts a session ID prefix followed by the new title; if the renamed session is the
 active one, its in-memory title updates immediately. `/search` matches message text

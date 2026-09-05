@@ -44,7 +44,7 @@ const ACTIVE_PROFILE_KEY: &str = "active_profile";
 pub async fn start_chat<F>(
     mut config: Config,
     tools: ToolRegistry,
-    mcp_statuses: Vec<ConnectionStatus>,
+    mut mcp_statuses: Vec<ConnectionStatus>,
     database: &Database,
     project: &ProjectContext,
     resume_id: Option<String>,
@@ -835,6 +835,86 @@ where
                 }
                 continue;
             }
+            if command == "/mcp" {
+                let arg = argument.trim();
+                // `/mcp apply name:on|off ...` — the dialog submits one line covering every
+                // mark, so the response is a single "config updated" notice.
+                if let Some(rest) = arg.strip_prefix("apply ") {
+                    let mut applied = 0usize;
+                    let mut first_error = None;
+                    for pair in rest.split_whitespace() {
+                        let (name, want) = match pair.split_once(':') {
+                            Some((n, w)) => (n, w),
+                            None => continue,
+                        };
+                        let want_on = want.eq_ignore_ascii_case("on");
+                        match set_mcp_enabled(&config, &mut mcp_statuses, name, want_on) {
+                            Ok(()) => applied += 1,
+                            Err(error) => {
+                                if first_error.is_none() {
+                                    first_error = Some(format!("{error:#}"));
+                                }
+                            }
+                        }
+                    }
+                    match first_error {
+                        Some(error) => chat_ui.error(&format!(
+                            "MCP config updated ({applied} changed), but: {error}"
+                        ))?,
+                        None => chat_ui.notice("MCP config updated — restart kamui to apply.")?,
+                    }
+                    continue;
+                }
+                if let Some(name) = arg.strip_prefix("toggle ").map(str::trim) {
+                    let name = name.trim();
+                    if name.is_empty() {
+                        chat_ui.notice("usage: /mcp toggle <server>")?;
+                        continue;
+                    }
+                    match toggle_mcp(&config, &mut mcp_statuses, name) {
+                        Ok(now_enabled) => {
+                            let text = print_mcp(&mcp_statuses, &tools);
+                            chat_ui.notice(&format!(
+                                "{} is now {}.\nRestart kamui to apply.\n\n{text}",
+                                name,
+                                if now_enabled { "enabled" } else { "disabled" }
+                            ))?;
+                        }
+                        Err(error) => chat_ui.error(&format!("Could not toggle: {error:#}"))?,
+                    }
+                    continue;
+                }
+                if arg.is_empty() && use_tui {
+                    let items: Vec<(String, String)> = mcp_statuses
+                        .iter()
+                        .map(|s| {
+                            let state = if s.disabled {
+                                "disabled"
+                            } else if s.error.is_some() {
+                                "unavailable"
+                            } else {
+                                "enabled"
+                            };
+                            (
+                                s.name.clone(),
+                                format!("{state} · {} tool(s)", s.tool_count),
+                            )
+                        })
+                        .collect();
+                    let marks: Vec<bool> = mcp_statuses.iter().map(|s| !s.disabled).collect();
+                    if !hub
+                        .as_ref()
+                        .map(|h| h.open_mcp_dialog(items, marks))
+                        .unwrap_or(false)
+                    {
+                        chat_ui.notice("No MCP servers configured.")?;
+                    }
+                    continue;
+                }
+                let text = print_mcp(&mcp_statuses, &tools);
+                chat_ui.notice(&text)?;
+                continue;
+            }
             if command == "/compact" {
                 let outcome = tokio::select! {
                     result = run_compaction(
@@ -1310,6 +1390,7 @@ where
         let mut final_finish = String::new();
         let mut last_content = String::new();
         let mut tool_trail: Vec<Message> = Vec::new();
+        let mut total_tool_calls: usize = 0;
         // Pre-edit snapshot of every file an approved patch_file call touches this turn, so an
         // interrupted multi-file edit can be reverted instead of left half-applied (see
         // `snapshot_patch_target`/`revert_on_cancel`).
@@ -1564,7 +1645,7 @@ where
                     crate::terminal::format_duration(started.elapsed())
                 ));
                 let activity = {
-                    let mut a = format!("tools\t{}", tool_calls.len());
+                    let mut a = format!("tools\t{}", total_tool_calls);
                     if let Some(t) = ttft {
                         a.push_str(&format!("\nlat\t{}", crate::terminal::format_duration(t)));
                     }
@@ -1613,6 +1694,7 @@ where
                     None,
                 );
             }
+            total_tool_calls += tool_calls.len();
             accumulate_usage(&mut final_usage, &usage);
             final_finish = finish_reason;
             last_content = content.clone();
@@ -3405,19 +3487,11 @@ fn mcp_sidebar_value(statuses: &[ConnectionStatus]) -> String {
     statuses
         .iter()
         .map(|server| match &server.error {
-            Some(_) => format!("{} · unavailable", server.name),
-            None => format!(
-                "{} · {} tool(s){}",
-                server.name,
-                server.tool_count,
-                if server.trusted { " · trusted" } else { "" }
-            ),
+            Some(_) => format!("- {}\n  unavailable", server.name),
+            None => format!("- {}\n  {} tool(s)", server.name, server.tool_count),
         })
         .collect::<Vec<_>>()
-        .join(
-            "
-",
-        )
+        .join("\n")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4690,6 +4764,10 @@ pub(crate) fn print_help(out: &mut String) {
     let _ = writeln!(out, "/status           Show project and connection status");
     let _ = writeln!(
         out,
+        "/mcp              List MCP servers and their tool counts"
+    );
+    let _ = writeln!(
+        out,
         "/memory           List facts Kamui remembers across sessions and projects"
     );
     let _ = writeln!(
@@ -4889,6 +4967,88 @@ fn print_commands(library: &commands::CommandLibrary, out: &mut String) {
 struct GitStatus {
     branch: String,
     changed: usize,
+}
+
+/// The `/mcp` listing: every configured server with its live tool count, plus the built-in
+/// tools that are always present. Unlike the one-line sidebar value, this is the full report.
+fn print_mcp(statuses: &[ConnectionStatus], tools: &ToolRegistry) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "Built-in tools: {} (read_file, list_directory, grep, glob, run_command, patch_file, ...)",
+        tools.len()
+    );
+    if statuses.is_empty() {
+        out.push_str("\nNo MCP servers configured. Add [mcp.<name>] to kamui.toml.\n");
+        return out;
+    }
+    let _ = writeln!(out, "\nMCP servers:");
+    let mut total = 0usize;
+    for server in statuses {
+        if server.disabled {
+            let _ = writeln!(
+                out,
+                "  - {}  disabled (run /mcp toggle {})",
+                server.name, server.name
+            );
+            continue;
+        }
+        match &server.error {
+            Some(error) => {
+                let _ = writeln!(out, "  - {}  unavailable", server.name);
+                let _ = writeln!(out, "      {error}");
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "  - {}  {} tool(s){}",
+                    server.name,
+                    server.tool_count,
+                    if server.trusted { " · trusted" } else { "" }
+                );
+                total += server.tool_count;
+            }
+        }
+    }
+    let _ = writeln!(out, "\nTotal MCP tools: {total}");
+    out
+}
+
+/// Set an `[mcp.<name>]` server's `enabled` flag to an explicit value and mirror it in the
+/// in-memory status list. Connections are made at startup, so the caller tells the user to
+/// restart.
+fn set_mcp_enabled(
+    config: &Config,
+    statuses: &mut [ConnectionStatus],
+    name: &str,
+    enabled: bool,
+) -> Result<()> {
+    config
+        .mcp_servers
+        .iter()
+        .find(|s| s.name == name)
+        .with_context(|| format!("no MCP server named '{name}'"))?;
+    let path = crate::config::global_config_path()?;
+    crate::config::set_mcp_enabled(&path, name, enabled)?;
+    if let Some(status) = statuses.iter_mut().find(|s| s.name == name) {
+        status.disabled = !enabled;
+    }
+    Ok(())
+}
+
+/// Flip an `[mcp.<name>]` server's `enabled` flag in the global config and mirror it in the
+/// in-memory status list. Connections are made at startup, so the caller tells the user to
+/// restart. Returns the new enabled state.
+fn toggle_mcp(config: &Config, statuses: &mut [ConnectionStatus], name: &str) -> Result<bool> {
+    let server = config
+        .mcp_servers
+        .iter()
+        .find(|s| s.name == name)
+        .with_context(|| format!("no MCP server named '{name}'"))?;
+    let now_enabled = !server.enabled;
+    set_mcp_enabled(config, statuses, name, now_enabled)?;
+    Ok(now_enabled)
 }
 
 fn print_status(
@@ -5270,6 +5430,7 @@ mod tests {
             name: name.to_string(),
             tool_count: tools,
             trusted,
+            disabled: false,
             error: error.map(str::to_string),
         }
     }
@@ -5377,15 +5538,9 @@ mod tests {
             status("filesystem", 11, true, None),
         ]);
         let rows: Vec<&str> = value.split('\n').collect();
-        assert_eq!(rows.len(), 2, "one row per server: {rows:?}");
-        assert!(
-            rows[0].contains("mcptools") && rows[0].contains("79 tool(s)"),
-            "{rows:?}"
-        );
-        assert!(
-            rows[1].contains("trusted"),
-            "trusted servers say so: {rows:?}"
-        );
+        assert_eq!(rows.len(), 4, "two rows per server: {rows:?}");
+        assert!(rows[0].contains("mcptools"), "{rows:?}");
+        assert!(rows[1].contains("79 tool(s)"), "{rows:?}");
     }
 
     #[test]

@@ -80,6 +80,9 @@ api_key = \"\"
 # command = \"uvx\"
 # args = [\"mcp-excel\"]
 # trusted = true         # skip the per-call approval for this server
+# enabled = false        # opt out without deleting (opencode-compatible)
+# [mcp.excel.env]        # extra environment for the child process
+# KEY = \"value\"
 
 # Commands run_command may run without asking for approval. Exact match only (after
 # trimming), so this never widens beyond exactly what is listed. Global-only, like
@@ -150,6 +153,12 @@ pub struct McpServer {
     pub args: Vec<String>,
     /// When true, this server's tools run without per-call approval.
     pub trusted: bool,
+    pub env: HashMap<String, String>,
+    pub url: Option<String>,
+    pub headers: HashMap<String, String>,
+    /// Whether the server participates in the current session. Disabled servers are kept
+    /// (rather than dropped) so `/mcp` can list and re-enable them.
+    pub enabled: bool,
 }
 
 /// Fully resolved runtime configuration: every available profile plus the default choice.
@@ -239,11 +248,25 @@ struct CommandsSection {
 
 #[derive(Debug, Default, Deserialize)]
 struct McpSection {
+    #[serde(default)]
+    enabled: Option<bool>,
+    /// opencode names this `type`; accept both spellings.
+    #[serde(default, alias = "type")]
+    kind: Option<String>,
     command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     trusted: bool,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    /// opencode uses `environment`, accept both
+    #[serde(default)]
+    environment: HashMap<String, String>,
+    /// Remote server (`type = "remote"`): streamable-http URL + optional headers.
+    url: Option<String>,
+    #[serde(default)]
+    headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -459,18 +482,48 @@ fn resolve_prices(global: PricingSection, project: Option<PricingSection>) -> Re
     Prices::new(currency, models)
 }
 
-/// Turn `[mcp.<name>]` blocks into launchable server definitions, ordered by name.
+/// Turn `[mcp.<name>]` blocks into launchable server definitions, ordered by name. Disabled
+/// servers are kept (with `enabled = false`) rather than dropped, so `/mcp` can list and
+/// re-enable them; `mcp::connect_all` skips them.
 fn resolve_mcp_servers(sections: HashMap<String, McpSection>) -> Result<Vec<McpServer>> {
     let mut servers = Vec::with_capacity(sections.len());
     for (name, section) in sections {
+        let enabled = section.enabled.unwrap_or(true);
+        let is_remote = section
+            .kind
+            .as_deref()
+            .is_some_and(|k| k.eq_ignore_ascii_case("remote"));
+        if is_remote {
+            let url = section
+                .url
+                .clone()
+                .with_context(|| format!("mcp server '{name}' is remote but has no url"))?;
+            servers.push(McpServer {
+                name,
+                command: String::new(),
+                args: Vec::new(),
+                trusted: section.trusted,
+                env: HashMap::new(),
+                url: Some(url),
+                headers: section.headers,
+                enabled,
+            });
+            continue;
+        }
         let command = section
             .command
             .with_context(|| format!("mcp server '{name}' is missing a command"))?;
+        let mut env = section.env;
+        env.extend(section.environment);
         servers.push(McpServer {
             name,
             command,
             args: section.args,
             trusted: section.trusted,
+            env,
+            url: None,
+            headers: HashMap::new(),
+            enabled,
         });
     }
     servers.sort_by(|a, b| a.name.cmp(&b.name));
@@ -664,6 +717,33 @@ pub fn save_theme(path: &Path, theme: &str) -> Result<()> {
         .context("global config must be a TOML table")?;
     table.insert("theme".to_string(), toml::Value::String(theme.to_string()));
     let rendered = toml::to_string_pretty(&doc).context("could not serialize theme config")?;
+    std::fs::write(path, rendered)?;
+    Ok(())
+}
+
+/// Toggle an `[mcp.<name>]` server's `enabled` flag in the global `kamui.toml`. The runtime
+/// connection is made at startup, so the change applies on the next launch; `/mcp` reports that.
+pub fn set_mcp_enabled(path: &Path, name: &str, enabled: bool) -> Result<()> {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc: toml::Value = if content.trim().is_empty() {
+        toml::Value::Table(Default::default())
+    } else {
+        toml::from_str(&content).unwrap_or(toml::Value::Table(Default::default()))
+    };
+    let mcp = doc
+        .as_table_mut()
+        .context("global config must be a TOML table")?
+        .entry("mcp")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("[mcp] must be a TOML table")?;
+    let server = mcp
+        .entry(name.to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("mcp server entry must be a TOML table")?;
+    server.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+    let rendered = toml::to_string_pretty(&doc).context("could not serialize mcp config")?;
     std::fs::write(path, rendered)?;
     Ok(())
 }
@@ -1107,6 +1187,49 @@ api_key = "k"
         )
         .unwrap_err();
         assert!(error.to_string().contains("missing a command"));
+    }
+
+    #[test]
+    fn an_mcp_server_can_be_disabled_and_forward_env() {
+        let config = resolve(
+            file(
+                "model = \"m\"\n[provider]\napi_key = \"k\"\n\
+                 [mcp.on]\ncommand = \"srv\"\nenabled = true\n\
+                 [mcp.on.environment]\nTOKEN = \"t\"\n\
+                 [mcp.off]\ncommand = \"srv\"\nenabled = false",
+            ),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.mcp_servers.len(), 2, "disabled servers are kept");
+        let on = config.mcp_servers.iter().find(|s| s.name == "on").unwrap();
+        assert!(on.enabled);
+        assert_eq!(on.env.get("TOKEN").map(String::as_str), Some("t"));
+        let off = config.mcp_servers.iter().find(|s| s.name == "off").unwrap();
+        assert!(!off.enabled);
+    }
+
+    #[test]
+    fn a_remote_mcp_server_parses_without_a_command() {
+        let config = resolve(
+            file(
+                "model = \"m\"\n[provider]\napi_key = \"k\"\n\
+                 [mcp.remote]\ntype = \"remote\"\nurl = \"https://example.com/mcp\"\n\
+                 [mcp.remote.headers]\nX-Api-Key = \"secret\"",
+            ),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.mcp_servers.len(), 1);
+        let remote = &config.mcp_servers[0];
+        assert_eq!(remote.url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(remote.command, "");
+        assert_eq!(
+            remote.headers.get("X-Api-Key").map(String::as_str),
+            Some("secret")
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("stats", "Show current session usage"),
     ("usage", "Show token usage by day and month"),
     ("status", "Show project and connection status"),
+    ("mcp", "List MCP servers and their tools"),
     ("memory", "List remembered facts"),
     ("forget", "Forget a remembered fact"),
     ("expand", "Expand the last transcript card"),

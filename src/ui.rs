@@ -395,6 +395,11 @@ pub struct DialogState {
     pub items: Vec<(String, String)>,
     pub query: String,
     pub selected: usize,
+    /// When true, the dialog is a checkbox list: Space toggles a mark, Enter applies all marks
+    /// (submits one command per item), Esc cancels. `marks[i]` is the desired final state of
+    /// `items[i]`. Text query filtering is disabled in this mode.
+    pub multi_toggle: bool,
+    pub marks: Vec<bool>,
 }
 
 impl DialogState {
@@ -405,6 +410,20 @@ impl DialogState {
             items,
             query: String::new(),
             selected: 0,
+            multi_toggle: false,
+            marks: Vec::new(),
+        }
+    }
+
+    pub fn new_toggle(title: &str, items: Vec<(String, String)>, marks: Vec<bool>) -> Self {
+        Self {
+            title: title.to_string(),
+            prefix: "/mcp apply ".to_string(),
+            items,
+            query: String::new(),
+            selected: 0,
+            multi_toggle: true,
+            marks,
         }
     }
 
@@ -1574,6 +1593,18 @@ impl InputHub {
         let _ = self.screen.draw_now();
         true
     }
+
+    pub fn open_mcp_dialog(&self, items: Vec<(String, String)>, marks: Vec<bool>) -> bool {
+        if items.is_empty() {
+            return false;
+        }
+        {
+            let mut s = lock_screen(&self.screen.0);
+            s.model.dialog = Some(DialogState::new_toggle("MCP Servers", items, marks));
+        }
+        let _ = self.screen.draw_now();
+        true
+    }
     /// Sources for the Ctrl+S session switcher.
     pub fn set_sessions(&self, items: Vec<(String, String)>) {
         *self
@@ -1867,7 +1898,18 @@ fn render_dialog(frame: &mut Frame<'_>, dialog: &DialogState, area: Rect) {
     };
 
     frame.render_widget(Clear, box_area);
-    let mut lines = vec![
+    let header = if dialog.multi_toggle {
+        Line::from(vec![
+            Span::styled(
+                "\u{276f} ".to_string(),
+                Style::default().fg(BLUE()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Space toggles · Enter applies · Esc closes".to_string(),
+                Style::default().fg(MUTED()),
+            ),
+        ])
+    } else {
         Line::from(vec![
             Span::styled(
                 "\u{276f} ".to_string(),
@@ -1882,9 +1924,9 @@ fn render_dialog(frame: &mut Frame<'_>, dialog: &DialogState, area: Rect) {
                 },
                 Style::default().fg(BORDER()),
             ),
-        ]),
-        Line::from(""),
-    ];
+        ])
+    };
+    let mut lines = vec![header, Line::from("")];
     if filtered.is_empty() {
         lines.push(Line::styled(
             "(no match)".to_string(),
@@ -1894,11 +1936,28 @@ fn render_dialog(frame: &mut Frame<'_>, dialog: &DialogState, area: Rect) {
     for (idx, (value, label)) in filtered.iter().enumerate().take(end).skip(start) {
         let is_on = idx == selected;
         let prefix = if is_on { "\u{276f} " } else { "  " };
+        // The mark column maps a filtered row back to its item index via the value/label
+        // match; toggle dialogs never filter, so idx is the item index.
+        let mark = if dialog.multi_toggle {
+            let item_idx = dialog
+                .items
+                .iter()
+                .position(|(v, l)| v == value && l == label)
+                .unwrap_or(idx);
+            let on = dialog.marks.get(item_idx).copied().unwrap_or(false);
+            Span::styled(
+                if on { "[x] " } else { "[ ] " }.to_string(),
+                Style::default().fg(if on { GREEN() } else { BORDER() }),
+            )
+        } else {
+            Span::raw("")
+        };
         let mut row = vec![
             Span::styled(
                 prefix.to_string(),
                 Style::default().fg(if is_on { BLUE() } else { BORDER() }),
             ),
+            mark,
             Span::styled(
                 label.clone(),
                 Style::default()
@@ -1911,7 +1970,7 @@ fn render_dialog(frame: &mut Frame<'_>, dialog: &DialogState, area: Rect) {
             ),
         ];
         // Show the raw value only when the label doesn't already contain it.
-        if !label.contains(value.as_str()) {
+        if !dialog.multi_toggle && !label.contains(value.as_str()) {
             row.push(Span::raw("  "));
             row.push(Span::styled(value.clone(), Style::default().fg(BORDER())));
         }
@@ -2420,6 +2479,22 @@ fn input_thread(
                                 }
                             }
                             Some(HitTarget::Dialog(index)) => {
+                                let multi = lock_screen(&screen.0)
+                                    .model
+                                    .dialog
+                                    .as_ref()
+                                    .is_some_and(|d| d.multi_toggle);
+                                if multi {
+                                    let mut s = lock_screen(&screen.0);
+                                    if let Some(dialog) = s.model.dialog.as_mut()
+                                        && let Some(mark) = dialog.marks.get_mut(index)
+                                    {
+                                        *mark = !*mark;
+                                        drop(s);
+                                        let _ = screen.draw_now();
+                                    }
+                                    continue 'keys;
+                                }
                                 let line = {
                                     let mut s = lock_screen(&screen.0);
                                     let picked = s.model.dialog.as_ref().and_then(|dialog| {
@@ -2766,7 +2841,29 @@ fn input_thread(
                             dialog.selected = (dialog.selected + 1) % total;
                         }
                     }
+                    KeyCode::Char(' ') if dialog.multi_toggle => {
+                        if let Some(mark) = dialog.marks.get_mut(dialog.selected) {
+                            *mark = !*mark;
+                        }
+                    }
                     KeyCode::Enter => {
+                        if dialog.multi_toggle {
+                            // Apply every mark as one queued command so the response is a single
+                            // "config updated" line, not one notice per server.
+                            let pairs: Vec<String> = dialog
+                                .items
+                                .iter()
+                                .zip(dialog.marks.iter())
+                                .map(|((value, _), &on)| {
+                                    format!("{}:{}", value, if on { "on" } else { "off" })
+                                })
+                                .collect();
+                            let line = format!("/mcp apply {}", pairs.join(" "));
+                            s.model.dialog = None;
+                            drop(s);
+                            submit_line(&screen, &tx, &requester, &busy, &interrupt, &queue, line);
+                            continue;
+                        }
                         let picked = dialog
                             .filtered()
                             .get(dialog.selected)
@@ -2781,10 +2878,15 @@ fn input_thread(
                     }
                     KeyCode::Esc => s.model.dialog = None,
                     KeyCode::Backspace => {
-                        dialog.query.pop();
-                        dialog.selected = 0;
+                        if !dialog.multi_toggle {
+                            dialog.query.pop();
+                            dialog.selected = 0;
+                        }
                     }
-                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    KeyCode::Char(c)
+                        if !dialog.multi_toggle
+                            && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
                         dialog.query.push(c);
                         dialog.selected = 0;
                     }
@@ -4059,16 +4161,20 @@ fn push_sidebar_value(lines: &mut Vec<Line<'static>>, key: &str, value_line: &st
         return;
     }
     if let Some((label, rest)) = value_line.split_once('\t') {
-        let label_w = 5usize;
-        let value_max = max.saturating_sub(label_w + 1);
         let style = sidebar_value_style(key, label, rest);
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{label:<label_w$} "),
-                Style::default().fg(TEXT()).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(crate::tui::truncate_chars(rest, value_max), style),
-        ]));
+        // label on its own line, value indented on next line (user request: not "model model name")
+        lines.push(Line::styled(
+            format!("{label} :"),
+            Style::default().fg(TEXT()).add_modifier(Modifier::BOLD),
+        ));
+        let indented = format!(
+            " {}",
+            crate::tui::truncate_chars(rest, max.saturating_sub(1))
+        );
+        // mcp value already contains newlines/bullets — keep as-is but indented
+        for part in indented.split('\n') {
+            lines.push(Line::styled(part.to_string(), style));
+        }
         return;
     }
     let truncated = if key == "Project" {
